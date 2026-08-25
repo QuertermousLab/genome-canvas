@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+unit="${GENOME_CANVAS_SYSTEMD_UNIT:-genome-canvas.service}"
+health_url="${GENOME_CANVAS_HEALTH_URL:-http://127.0.0.1:8000/api/health}"
+public_url="${GENOME_CANVAS_PUBLIC_URL:-http://127.0.0.1:8000/}"
+
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  green=$'\033[32m'; yellow=$'\033[33m'; red=$'\033[31m'; bold=$'\033[1m'; reset=$'\033[0m'
+else
+  green=""; yellow=""; red=""; bold=""; reset=""
+fi
+
+usage() {
+  printf '%s\n' \
+    "Genome Canvas service manager" \
+    "" \
+    "Usage: ./genome-canvasctl {start|stop|restart|status|monitor|logs|enable|disable}" \
+    "" \
+    "Environment: GENOME_CANVAS_SYSTEMD_UNIT, GENOME_CANVAS_HEALTH_URL," \
+    "             GENOME_CANVAS_PUBLIC_URL, NO_COLOR"
+}
+
+fail() { printf '%sERROR%s: %s\n' "$red" "$reset" "$*" >&2; exit 1; }
+require_systemd() { command -v systemctl >/dev/null 2>&1 || fail "systemctl is not installed"; }
+
+probe() {
+  local result code seconds
+  if result="$(curl --silent --show-error --output /dev/null --max-time 4 --write-out '%{http_code} %{time_total}' "$health_url" 2>/dev/null)"; then
+    read -r code seconds <<<"$result"
+    if [[ "$code" == "200" ]]; then
+      printf '  health    %sOK%s HTTP %s, %ss\n' "$green" "$reset" "$code" "$seconds"
+      return 0
+    fi
+    printf '  health    %sUNHEALTHY%s HTTP %s\n' "$yellow" "$reset" "$code"
+    return 1
+  fi
+  printf '  health    %sUNREACHABLE%s %s\n' "$red" "$reset" "$health_url"
+  return 1
+}
+
+show_status() {
+  local state enabled pid
+  require_systemd
+  state="$(systemctl show "$unit" --property=ActiveState --value 2>/dev/null || true)"
+  enabled="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+  pid="$(systemctl show "$unit" --property=MainPID --value 2>/dev/null || true)"
+  printf '%sGenome Canvas%s\n' "$bold" "$reset"
+  printf '  service   %s (enabled=%s, pid=%s)\n' "${state:-not-found}" "${enabled:-unknown}" "${pid:-0}"
+  probe || true
+  printf '  URL       %s\n' "$public_url"
+}
+
+monitor() {
+  local interval="${1:-5}"
+  [[ "$interval" =~ ^[1-9][0-9]*$ ]] || fail "interval must be a positive integer"
+  while true; do
+    [[ -t 1 ]] && printf '\033[2J\033[H'
+    show_status
+    printf '\nRefreshing every %ss; press Ctrl+C to exit.\n' "$interval"
+    sleep "$interval"
+  done
+}
+
+require_systemd
+case "${1:-status}" in
+  start) systemctl start "$unit" ;;
+  stop) systemctl stop "$unit" ;;
+  restart) systemctl restart "$unit" ;;
+  status) show_status ;;
+  monitor) monitor "${2:-5}" ;;
+  logs) exec journalctl -u "$unit" --follow --lines=100 ;;
+  enable) systemctl enable --now "$unit" ;;
+  disable) systemctl disable --now "$unit" ;;
+  help|-h|--help) usage ;;
+  *) usage >&2; fail "unknown command: ${1:-}" ;;
+esac

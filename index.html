@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#62686c">
+  <meta name="description" content="A private, local-network genome browser for server and public tracks.">
+  <title>Genome Canvas — Local genome browser</title>
+  <script>if (new URLSearchParams(location.search).get("desktop") === "1") document.documentElement.classList.add("desktop-embedded");</script>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css?v=20260824.18">
+</head>
+<body class="workspace-pending">
+  <section class="workspace-gate" id="workspace-gate" aria-label="Choose Genome Canvas workspace">
+    <div class="workspace-gate-card">
+      <header class="workspace-gate-header">
+        <div class="workspace-gate-brand"><span>G</span><div><b>Genome Canvas</b><small>CHOOSE A WORKSPACE</small></div></div>
+        <button id="close-workspace-gate" type="button" aria-label="Close workspace selector" hidden>×</button>
+      </header>
+      <div class="workspace-gate-content">
+        <p>Workspaces separate Favorites and file-browser history. No password is required.</p>
+        <label class="workspace-search"><span aria-hidden="true">⌕</span><input id="workspace-search" type="search" placeholder="Search workspaces"></label>
+        <div class="workspace-groups">
+          <section>
+            <div class="workspace-group-heading"><span>SERVER HOME WORKSPACES</span><small>Automatically discovered from /home</small></div>
+            <div class="workspace-list" id="home-workspace-list"></div>
+          </section>
+          <section>
+            <div class="workspace-group-heading"><span>MANUAL WORKSPACES</span><small>Start in shared /nfs</small></div>
+            <div class="workspace-list" id="manual-workspace-list"></div>
+          </section>
+          <details class="hidden-workspaces" id="hidden-workspaces" hidden>
+            <summary>Hidden Home workspaces <b id="hidden-workspace-count">0</b></summary>
+            <div class="workspace-list" id="hidden-workspace-list"></div>
+          </details>
+        </div>
+      </div>
+      <form class="workspace-create" id="workspace-create-form">
+        <label><span>NEW MANUAL WORKSPACE</span><input id="workspace-create-name" maxlength="48" placeholder="e.g. Shared epigenomics project" required></label>
+        <button type="submit">Create and Enter</button>
+      </form>
+      <footer><span id="workspace-gate-status">Select a Home workspace or create a shared workspace.</span><small>Hiding a Home workspace never deletes its files.</small></footer>
+    </div>
+  </section>
+
+  <main class="app-shell" id="app-shell">
+    <header class="topbar">
+      <div class="brand-mark" aria-hidden="true">G</div>
+      <div class="brand-copy">
+        <strong id="app-name">Genome Canvas</strong>
+        <span>LOCAL GENOMICS WORKBENCH</span>
+      </div>
+      <div class="topbar-actions">
+        <button class="quiet-button workspace-button" id="workspace-button" type="button" title="Switch workspace"><span aria-hidden="true">◉</span><b id="workspace-name">Workspace</b></button>
+        <button class="quiet-button" id="favorites-button" type="button"><span aria-hidden="true">☆</span> Favorites</button>
+        <button class="quiet-button" id="help-button" type="button"><span aria-hidden="true">?</span> Guide</button>
+        <button class="share-button" id="share-button" type="button"><span aria-hidden="true">↗</span> Share View</button>
+      </div>
+    </header>
+
+    <section class="browser-toolbar" aria-label="Genome navigation">
+      <button class="rail-toggle icon-button" id="rail-toggle" type="button" aria-label="Show track panel">☰</button>
+      <label class="field genome-field">
+        <span>REFERENCE ASSEMBLY</span>
+        <select id="genome-select" aria-label="Reference genome">
+          <optgroup label="Human">
+            <option value="hg38">Human · GRCh38 / hg38</option>
+            <option value="hg19">Human · GRCh37 / hg19</option>
+          </optgroup>
+          <optgroup label="Model organisms">
+            <option value="mm39">Mouse · GRCm39 / mm39</option>
+            <option value="mm10">Mouse · GRCm38 / mm10</option>
+            <option value="rn7">Rat · mRatBN7.2 / rn7</option>
+            <option value="danRer11">Zebrafish · GRCz11</option>
+            <option value="dm6">Drosophila · dm6</option>
+            <option value="sacCer3">Yeast · sacCer3</option>
+          </optgroup>
+          <option value="__custom__">＋ Custom reference…</option>
+        </select>
+      </label>
+
+      <form class="locus-form" id="locus-form">
+        <label class="field locus-field">
+          <span>LOCUS OR GENE</span>
+          <input id="locus-input" autocomplete="off" spellcheck="false" aria-label="Locus, gene, or rsID" placeholder="e.g. TP53, rs328, or chr17:7,660,000-7,690,000">
+        </label>
+        <button class="go-button" type="submit">Go</button>
+      </form>
+
+      <div class="zoom-group" aria-label="Zoom controls">
+        <button class="icon-button" id="zoom-out" type="button" aria-label="Zoom out">−</button>
+        <span class="zoom-rule" aria-hidden="true"><i></i></span>
+        <button class="icon-button" id="zoom-in" type="button" aria-label="Zoom in">＋</button>
+      </div>
+      <button class="export-button" id="export-button" type="button" title="Export the current canvas as PNG">
+        <span aria-hidden="true">⇩</span><span class="export-label">Export PNG</span>
+      </button>
+    </section>
+
+    <section class="workspace" id="workspace">
+      <aside class="track-rail" id="track-rail" aria-label="Track library">
+        <div class="rail-heading">
+          <div><span>TRACK LIBRARY</span><strong><b id="track-count">0</b> visible</strong></div>
+          <button class="small-icon-button" id="close-rail" type="button" aria-label="Hide track panel">×</button>
+        </div>
+
+        <button class="server-source-card" id="server-files-button" type="button">
+          <span class="source-glyph" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span><strong>Open Server Files</strong><small>Browse configured data directories without uploading</small></span>
+          <span class="source-arrow" aria-hidden="true">→</span>
+        </button>
+
+        <div class="source-actions">
+          <button id="url-track-button" type="button"><span aria-hidden="true">⌁</span> Public Data</button>
+          <button id="custom-reference-button" type="button"><span aria-hidden="true">◎</span> Custom Reference</button>
+        </div>
+
+        <div class="track-section-heading">
+          <span>CURRENT VIEW</span>
+          <button id="refresh-tracks" type="button" title="Refresh track list" aria-label="Refresh track list">↻</button>
+        </div>
+        <div class="track-list" id="track-list">
+          <div class="track-empty" id="track-empty">
+            <span aria-hidden="true">≋</span>
+            <p>Tracks loaded from server files or public URLs appear here.</p>
+          </div>
+        </div>
+
+        <div class="format-note">
+          <span class="format-note-icon" aria-hidden="true">i</span>
+          <p><strong>Indexed formats are fastest</strong><br>BAM, CRAM, VCF, and related index files are paired automatically.</p>
+        </div>
+        <div class="format-note interaction-note">
+          <span class="format-note-icon" aria-hidden="true">?</span>
+          <p><strong>Right-click a track for settings</strong><br>Use the six-dot grip to reorder tracks.</p>
+        </div>
+      </aside>
+
+      <section class="genome-stage" aria-label="Genome browser canvas">
+        <div class="stage-chrome">
+          <div class="assembly-status">
+            <span id="assembly-badge">HG38</span>
+            <strong id="current-locus">Loading reference…</strong>
+          </div>
+          <div class="stage-actions">
+            <span id="view-span">—</span>
+            <button id="center-guide-button" type="button" aria-pressed="false" title="Toggle center guide">＋ guide</button>
+            <div class="highlight-controls" id="highlight-controls">
+              <button id="highlight-mode-button" type="button" aria-pressed="false" title="Drag across a track to highlight a genomic interval"><span aria-hidden="true">▧</span> Highlight</button>
+              <label class="highlight-color" title="Highlight color"><input id="highlight-color-input" type="color" value="#f2c94c" aria-label="Highlight color"><span aria-hidden="true"></span></label>
+              <button id="clear-highlights-button" type="button" title="Clear all highlights" disabled>Clear</button>
+            </div>
+          </div>
+        </div>
+        <div class="igv-shell">
+          <div id="igv-container"></div>
+          <div class="highlight-layer" id="highlight-layer" aria-hidden="true"></div>
+          <div class="viewer-loading" id="viewer-loading" role="status">
+            <span class="loader-mark">G</span>
+            <div><strong>Preparing genome canvas</strong><small>Loading reference and annotations…</small></div>
+          </div>
+        </div>
+      </section>
+      <button class="rail-scrim" id="rail-scrim" type="button" aria-label="Close track panel"></button>
+    </section>
+
+    <footer class="statusbar">
+      <span><i class="status-dot" id="status-dot"></i><b id="status-text">Starting…</b></span>
+      <span id="track-summary">0 tracks</span>
+      <span>LAN MODE · Data stays on this server</span>
+    </footer>
+  </main>
+
+  <dialog class="modal file-modal" id="file-dialog">
+    <form method="dialog" class="dialog-shell">
+      <header class="dialog-header">
+        <div><span>SERVER STORAGE</span><h2>Select Track Files</h2></div>
+        <button class="dialog-close" value="cancel" aria-label="Close">×</button>
+      </header>
+      <div class="file-toolbar">
+        <label class="dialog-field root-field"><span>DATA ROOT</span><select id="root-select"></select></label>
+        <label class="dialog-field path-field"><span>SERVER PATH</span><input id="server-path-input" spellcheck="false" placeholder="/nfs/project/tracks"></label>
+        <button class="path-jump-button" id="path-jump-button" type="button">Go</button>
+        <div class="breadcrumbs" id="breadcrumbs" aria-label="Current directory"></div>
+      </div>
+      <div class="file-browser" id="file-browser" aria-live="polite"></div>
+      <footer class="dialog-footer">
+        <div class="file-selection-controls">
+          <span id="selection-summary">No files selected</span>
+          <button class="file-selection-button" id="select-all-files-button" type="button">Select All</button>
+          <button class="file-selection-button" id="clear-selected-files-button" type="button" disabled>Clear All</button>
+        </div>
+        <div><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" id="load-selected-button" type="button" disabled>Load Selected Tracks</button></div>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog class="modal url-modal" id="url-dialog">
+    <form class="dialog-shell" id="url-form">
+      <header class="dialog-header">
+        <div><span>REMOTE DATA</span><h2>Connect Public Data</h2></div>
+        <button class="dialog-close" type="button" data-close-dialog="url-dialog" aria-label="Close">×</button>
+      </header>
+      <nav class="public-data-tabs" aria-label="Public data source">
+        <button type="button" data-public-tab="hubs" aria-selected="true">Public Track Hubs</button>
+        <button type="button" data-public-tab="track" aria-selected="false">Single Track URL</button>
+      </nav>
+      <div class="dialog-content public-data-content">
+        <section class="public-data-panel" id="hub-panel" data-public-panel="hubs">
+          <p class="dialog-intro">Browse curated UCSC and WashU public data hubs for <strong id="hub-current-genome">hg38</strong>, or inspect another UCSC <code>hub.txt</code> or WashU JSON data hub.</p>
+          <div class="custom-hub-row">
+            <label class="dialog-field"><span>TRACK HUB URL</span><input id="custom-hub-url" type="url" placeholder="https://…/hub.txt or …/hub.json"></label>
+            <button class="secondary-button" id="inspect-custom-hub" type="button">Inspect Hub</button>
+          </div>
+          <div class="hub-browser-layout">
+            <aside class="hub-catalog-pane">
+              <label class="hub-search"><span aria-hidden="true">⌕</span><input id="hub-catalog-search" type="search" placeholder="Search public hubs"></label>
+              <div class="hub-scroll-frame">
+                <div class="hub-catalog" id="hub-catalog"></div>
+                <div class="persistent-scrollbar" data-scroll-target="hub-catalog" aria-hidden="true"><i></i></div>
+              </div>
+            </aside>
+            <section class="hub-track-pane">
+              <div class="hub-track-empty" id="hub-track-empty">
+                <span aria-hidden="true">≋</span>
+                <strong>Select a public hub</strong>
+                <small>Its compatible tracks will appear here for search and selection.</small>
+              </div>
+              <div class="hub-track-browser" id="hub-track-browser" hidden>
+                <header class="hub-track-header">
+                  <div><span id="hub-source-label">PUBLIC HUB</span><strong id="hub-name-label">Track hub</strong><small id="hub-track-count-label"></small></div>
+                  <a id="hub-source-link" target="_blank" rel="noreferrer" title="Open hub descriptor">↗</a>
+                </header>
+                <div class="hub-track-tools">
+                  <label class="hub-search"><span aria-hidden="true">⌕</span><input id="hub-track-search" type="search" placeholder="Filter tracks by sample, assay, or format"></label>
+                  <button type="button" id="select-visible-hub-tracks">Select Shown</button>
+                  <button type="button" id="clear-hub-tracks">Clear</button>
+                </div>
+                <div class="hub-track-status"><span id="hub-track-status"></span><div class="hub-page-controls"><button id="hub-prev-page" type="button" disabled>‹ Prev</button><button id="hub-next-page" type="button" disabled>Next ›</button></div></div>
+                <div class="hub-scroll-frame hub-track-scroll-frame">
+                  <div class="hub-track-list" id="hub-track-list"></div>
+                  <div class="persistent-scrollbar" data-scroll-target="hub-track-list" aria-hidden="true"><i></i></div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+        <section class="public-data-panel" id="track-url-panel" data-public-panel="track" hidden>
+          <p class="dialog-intro">Paste a publicly accessible track URL. The remote server must support CORS; provide an index for BAM, CRAM, and compressed VCF or BED files.</p>
+          <div class="form-grid">
+            <label class="dialog-field span-2"><span>DATA URL *</span><input id="track-url" type="url" required placeholder="https://…/sample.bigWig"></label>
+            <label class="dialog-field span-2"><span>INDEX URL</span><input id="track-index-url" type="url" placeholder="https://…/sample.bam.bai"></label>
+            <label class="dialog-field"><span>TRACK NAME</span><input id="track-name" placeholder="Optional display name"></label>
+            <label class="dialog-field"><span>FORMAT</span><select id="track-format"><option value="">Auto detect</option><option>bigwig</option><option>bigbed</option><option>bam</option><option>cram</option><option>vcf</option><option>hic</option><option>bed</option><option>bedgraph</option><option>gff3</option><option>gtf</option><option>seg</option><option>maf</option><option>bedpe</option><option>gwas</option><option>qtl</option></select></label>
+          </div>
+        </section>
+      </div>
+      <footer class="dialog-footer"><span id="public-data-footer-note">Choose a catalog entry, then select only the tracks you need</span><div><button class="secondary-button" type="button" data-close-dialog="url-dialog">Cancel</button><button class="primary-button" id="connect-track-button" type="submit" hidden>Connect Track</button><button class="primary-button" id="load-hub-tracks" type="button" disabled>Load Selected Tracks</button></div></footer>
+    </form>
+  </dialog>
+
+  <dialog class="modal reference-modal" id="reference-dialog">
+    <form class="dialog-shell" id="reference-form">
+      <header class="dialog-header">
+        <div><span>CUSTOM ASSEMBLY</span><h2>Load a Custom Reference Genome</h2></div>
+        <button class="dialog-close" type="button" data-close-dialog="reference-dialog" aria-label="Close">×</button>
+      </header>
+      <div class="dialog-content">
+        <p class="dialog-intro">Supports FASTA + FAI or 2bit. Enter a server `/data/...` address or any URL that supports Range requests and CORS.</p>
+        <div class="form-grid">
+          <label class="dialog-field"><span>ASSEMBLY ID *</span><input id="reference-id" required placeholder="myAssembly"></label>
+          <label class="dialog-field"><span>DISPLAY NAME</span><input id="reference-name" placeholder="My custom assembly"></label>
+          <label class="dialog-field span-2"><span>FASTA OR 2BIT URL *</span><input id="reference-url" required placeholder="/data/root/genome.fa"></label>
+          <label class="dialog-field span-2"><span>FAI INDEX URL</span><input id="reference-index-url" placeholder="/data/root/genome.fa.fai"></label>
+          <label class="dialog-field span-2"><span>CYTOBAND URL</span><input id="reference-cytoband-url" placeholder="Optional cytoband text file"></label>
+        </div>
+      </div>
+      <footer class="dialog-footer"><span>Switching the reference genome clears current tracks</span><div><button class="secondary-button" type="button" data-close-dialog="reference-dialog">Cancel</button><button class="primary-button" type="submit">Load Reference</button></div></footer>
+    </form>
+  </dialog>
+
+  <dialog class="modal share-modal" id="share-dialog">
+    <form method="dialog" class="dialog-shell">
+      <header class="dialog-header">
+        <div><span>LAN SHARE LINK</span><h2>Share Current View</h2></div>
+        <button class="dialog-close" value="cancel" aria-label="Close">×</button>
+      </header>
+      <div class="dialog-content share-content">
+        <div class="share-symbol" aria-hidden="true">↗</div>
+        <p>The current genome, locus, tracks, colors, and display settings are saved on this server. The short link can be opened directly on the LAN.</p>
+        <label class="dialog-field"><span>SHAREABLE URL</span><div class="copy-field"><input id="share-url" readonly><button id="copy-share-button" type="button">Copy</button></div></label>
+        <small>Local server files are not copied. Link recipients must be able to access this server.</small>
+      </div>
+      <footer class="dialog-footer"><span id="share-created-label"></span><button class="primary-button" value="cancel">Done</button></footer>
+    </form>
+  </dialog>
+
+  <dialog class="modal profile-modal" id="profile-dialog">
+    <form class="dialog-shell" id="profile-form">
+      <header class="dialog-header">
+        <div><span>SAVED WORKSPACES</span><h2>Favorite Profiles</h2></div>
+        <button class="dialog-close" type="button" data-close-dialog="profile-dialog" aria-label="Close">×</button>
+      </header>
+      <div class="dialog-content profile-content">
+        <section class="profile-save-panel">
+          <label class="dialog-field"><span>PROFILE NAME</span><input id="profile-name" maxlength="80" placeholder="e.g. Project overview"></label>
+          <button class="primary-button" id="save-profile-button" type="button">Save Current</button>
+          <button class="secondary-button" id="download-current-profile" type="button">Download Current JSON</button>
+          <button class="secondary-button" id="import-profile-button" type="button">Import JSON</button>
+          <input id="import-profile-file" type="file" accept="application/json,.json" hidden>
+        </section>
+        <div class="profile-list-heading"><span id="profile-list-owner">SAVED FOR GENOME</span><small>Saving the same name updates that profile</small></div>
+        <div class="profile-list" id="profile-list" aria-live="polite"></div>
+      </div>
+      <footer class="dialog-footer"><span>Profiles are private to the signed-in user and include genome, locus, track order, size, color, names, and highlights.</span><button class="primary-button" type="button" data-close-dialog="profile-dialog">Done</button></footer>
+    </form>
+  </dialog>
+
+  <dialog class="modal help-modal" id="help-dialog">
+    <form method="dialog" class="dialog-shell">
+      <header class="dialog-header">
+        <div><span>QUICK GUIDE</span><h2>Genome Canvas Guide</h2></div>
+        <button class="dialog-close" value="cancel" aria-label="Close">×</button>
+      </header>
+      <div class="dialog-content help-content">
+        <section><b>01</b><div><h3>Select a Reference Genome</h3><p>Choose a common assembly from the top menu, or load a custom FASTA or 2bit reference.</p></div></section>
+        <section><b>02</b><div><h3>Add Tracks</h3><p>Select files directly from configured server directories, or connect public URLs such as ENCODE and 1000 Genomes.</p></div></section>
+        <section><b>03</b><div><h3>Navigate and Explore</h3><p>Search coordinates or gene names, drag to pan, right-click a track for settings, or enable Highlight and drag across a track to mark an interval.</p></div></section>
+        <section><b>04</b><div><h3>Export and Share</h3><p>Export the current canvas as PNG or create a LAN-only short link stored on this server.</p></div></section>
+        <div class="format-matrix"><span>BAM / CRAM</span><span>VCF / BCF</span><span>BigWig / Wig</span><span>BED / BigBed</span><span>GFF / GTF</span><span>SEG / MAF</span><span>Hi-C Heatmap</span><span>BEDPE / Interact</span><span>GWAS / QTL</span></div>
+      </div>
+      <footer class="dialog-footer"><a href="https://igv.org/doc/igvjs/" target="_blank" rel="noreferrer">IGV.js documentation ↗</a><button class="primary-button" value="cancel">Got It</button></footer>
+    </form>
+  </dialog>
+
+  <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+  <script src="vendor/igv.min.js"></script>
+  <script type="module" src="app.js?v=20260824.30"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+.git
+.agents
+.codex
+.genomecanvas
+node_modules
+data
+genomecanvas.config.json
+npm-debug.log
+__pycache__
+*.pyc
+macos
+tests
+deploy
+docs

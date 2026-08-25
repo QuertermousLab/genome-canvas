@@ -1,0 +1,19 @@
+[Unit]
+Description=Genome Canvas genome browser
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=genome-canvas
+Group=genome-canvas
+WorkingDirectory=/opt/genome-canvas
+EnvironmentFile=-/etc/genome-canvas.env
+ExecStart=/usr/bin/python3 /opt/genome-canvas/server.py --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=3
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

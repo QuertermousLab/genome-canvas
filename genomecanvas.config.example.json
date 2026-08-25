@@ -1,0 +1,19 @@
+{
+  "appName": "Genome Canvas",
+  "host": "0.0.0.0",
+  "port": 8000,
+  "defaultGenome": "hg38",
+  "defaultLocus": "chr8:127,728,000-127,742,000",
+  "homeRoot": "/home",
+  "dbSnpHg38": "/path/to/hg38.dbsnp156.gz",
+  "ldReferenceHg19": {
+    "label": "1000 Genomes Phase 3 ALL",
+    "maxWindow": 2000000,
+    "bfileTemplate": "/path/to/1000G/ALL.chr{chrom}.genotypes",
+    "vcfTemplate": "/path/to/1000G/ALL.chr{chrom}.genotypes.vcf.gz"
+  },
+  "dataRoots": [
+    { "label": "Project tracks", "path": "./data" },
+    { "label": "Sequencing storage", "path": "/mnt/sequencing" }
+  ]
+}
