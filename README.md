@@ -26,6 +26,20 @@ Hi-C heatmaps, regional association plots, PNG export, and LAN share links.
 - Native AppKit macOS client with native controls and an embedded genome canvas
 - Python standard-library backend; no database server is required
 
+## Screenshots
+
+### Web browser
+
+![Genome Canvas web interface with signal, Hi-C and highlighted genomic tracks](docs/images/web-browser.png)
+
+### Native macOS app
+
+![Genome Canvas native macOS application with regional association and gene tracks](docs/images/macos-app.png)
+
+### Exported PNG
+
+![Genome Canvas PNG export with Hi-C heatmap, interaction arcs and LD-colored association plot](docs/images/exported-view.png)
+
 ## Quick start
 
 Requirements: Python 3.8 or newer. IGV.js is vendored, so the application does
