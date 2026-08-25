@@ -1,0 +1,81 @@
+name: Release macOS apps
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-release-${{ github.ref }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Create draft release
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 || \
+            gh release create "${tag}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --verify-tag \
+              --draft \
+              --title "Genome Canvas Desktop ${version}" \
+              --notes "Native Genome Canvas Desktop builds for Apple Silicon and Intel Macs. Requires macOS 13 or later. The applications are ad-hoc signed; Control-click the app and choose Open if Gatekeeper requests confirmation."
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            architecture: arm64
+          - runner: macos-15-intel
+            architecture: x86_64
+    runs-on: ${{ matrix.runner }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build native app
+        working-directory: macos/GenomeCanvasDesktop
+        run: ./build.sh "dist/${{ matrix.architecture }}"
+      - name: Verify and name archive
+        working-directory: macos/GenomeCanvasDesktop
+        shell: bash
+        run: |
+          app="dist/${{ matrix.architecture }}/Genome Canvas.app"
+          binary="${app}/Contents/MacOS/GenomeCanvasDesktop"
+          test "$(lipo -archs "${binary}")" = "${{ matrix.architecture }}"
+          codesign --verify --deep --strict "${app}"
+          mv "dist/${{ matrix.architecture }}/GenomeCanvasDesktop-macOS.zip" \
+            "GenomeCanvasDesktop-macOS-${{ matrix.architecture }}.zip"
+          shasum -a 256 "GenomeCanvasDesktop-macOS-${{ matrix.architecture }}.zip"
+      - name: Upload release asset
+        working-directory: macos/GenomeCanvasDesktop
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            "GenomeCanvasDesktop-macOS-${{ matrix.architecture }}.zip" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Publish release
+        run: |
+          gh release edit "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --draft=false \
+            --latest

@@ -15,7 +15,15 @@ launch Safari or duplicate the genome-browser backend.
 
 ## Build
 
-Run these commands on the Mac:
+Prebuilt downloads:
+
+- [Apple Silicon (arm64)](https://github.com/zhaoshuoxp/genome-canvas/releases/latest/download/GenomeCanvasDesktop-macOS-arm64.zip)
+- [Intel (x86_64)](https://github.com/zhaoshuoxp/genome-canvas/releases/latest/download/GenomeCanvasDesktop-macOS-x86_64.zip)
+
+The release archives are ad-hoc signed rather than Apple-notarized. If
+Gatekeeper requests confirmation, Control-click the app and choose **Open**.
+
+To build from source, run these commands on the Mac:
 
 ```bash
 cd GenomeCanvasDesktop
