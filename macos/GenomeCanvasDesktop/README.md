@@ -22,6 +22,14 @@ Prebuilt downloads:
 
 The release archives are ad-hoc signed rather than Apple-notarized. If
 Gatekeeper requests confirmation, Control-click the app and choose **Open**.
+If macOS still blocks the app after it has been moved to `/Applications`, run:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Genome Canvas.app"
+```
+
+Then open the app again. Only use this command for the app downloaded from this
+repository.
 
 To build from source, run these commands on the Mac:
 

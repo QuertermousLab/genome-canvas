@@ -124,6 +124,14 @@ Download a prebuilt app for your Mac:
 
 The release archives are ad-hoc signed rather than Apple-notarized. If
 Gatekeeper requests confirmation, Control-click the app and choose **Open**.
+If macOS still blocks the app after you move it to `/Applications`, remove the
+download quarantine attribute and open it again:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Genome Canvas.app"
+```
+
+Only use this command for the app downloaded from this repository.
 
 ```bash
 cd macos/GenomeCanvasDesktop
