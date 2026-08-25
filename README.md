@@ -6,8 +6,7 @@ and a native macOS client. Genome Canvas uses
 server-side file browsing, workspace-isolated Favorites, public track hubs,
 Hi-C heatmaps, regional association plots, PNG export, and LAN share links.
 
-[中文说明](README.zh-CN.md) · [Migration guide](docs/MIGRATION.md) ·
-[Security](SECURITY.md)
+[Migration guide](docs/MIGRATION.md) · [Security](SECURITY.md)
 
 ## Highlights
 
