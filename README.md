@@ -33,7 +33,7 @@ Requirements: Python 3.8 or newer. IGV.js is vendored, so the application does
 not need npm or internet access at runtime.
 
 ```bash
-git clone <your-repository-url> genome-canvas
+git clone https://github.com/zhaoshuoxp/genome-canvas.git
 cd genome-canvas
 cp genomecanvas.config.example.json genomecanvas.config.json
 ./start.sh --host 0.0.0.0 --port 8000

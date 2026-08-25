@@ -23,7 +23,7 @@ Genome Canvas 是一个面向实验室服务器的自托管基因组和表观基
 需要 Python 3.8 或更高版本。运行时不需要 npm，也不依赖外网下载 IGV.js。
 
 ```bash
-git clone <你的仓库地址> genome-canvas
+git clone https://github.com/zhaoshuoxp/genome-canvas.git
 cd genome-canvas
 cp genomecanvas.config.example.json genomecanvas.config.json
 ./start.sh --host 0.0.0.0 --port 8000

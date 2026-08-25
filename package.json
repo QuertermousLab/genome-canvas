@@ -2,8 +2,14 @@
   "name": "genome-canvas",
   "version": "1.0.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "A local-network genome browser for server and public tracks",
+  "homepage": "https://github.com/zhaoshuoxp/genome-canvas",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhaoshuoxp/genome-canvas.git"
+  },
   "scripts": {
     "start": "python3 server.py",
     "test": "python3 -B -m unittest discover -s tests -p 'test_*.py' && node --test tests/test_track_colors.mjs tests/test_signal_style.mjs tests/test_annotation_style.mjs tests/test_hic_heatmap.mjs tests/test_public_hubs.mjs tests/test_highlights.mjs tests/test_manhattan_style.mjs",
