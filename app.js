@@ -180,6 +180,7 @@ function desktopStateSnapshot() {
   return {
     type: "state",
     ready: Boolean(state.browser),
+    localMode: Boolean(state.config?.localMode),
     workspace: state.workspace ? { id: state.workspace.id, name: state.workspace.name, kind: state.workspace.kind } : null,
     workspaces: state.workspaceCatalog.map((workspace) => ({
       id: workspace.id,
@@ -973,6 +974,7 @@ async function loadWorkspaceCatalog() {
 }
 
 function showWorkspaceGate() {
+  if (state.config?.localMode) return;
   document.body.classList.remove("workspace-active", "workspace-pending");
   document.body.classList.add("workspace-selecting");
   $("#close-workspace-gate").hidden = !state.workspace;
@@ -1079,6 +1081,13 @@ async function initializeApplication() {
 async function initializeBrowser() {
   setStatus("Reading local configuration...", "busy");
   state.config = await fetchJSON(appURL("api/config"));
+  document.documentElement.classList.toggle("local-backend", Boolean(state.config.localMode));
+  if (state.config.localMode) {
+    $("#workspace-button").hidden = true;
+    $("#file-source-title").textContent = "Open Local Files";
+    $("#file-source-detail").textContent = "Browse files on this Mac without uploading";
+    $("#file-dialog-kicker").textContent = "THIS MAC";
+  }
   state.authenticatedUser = state.config.workspaceId || state.config.user || "workspace";
   $("#profile-list-owner").textContent = `SAVED FOR ${(state.config.user || "WORKSPACE").toLocaleUpperCase()}`;
   ui.appName.textContent = state.config.appName || "Genome Canvas";
@@ -1238,7 +1247,7 @@ async function loadDirectory(root, path) {
   state.currentPath = path;
   state.currentFileEntries = [];
   updateSelectionSummary();
-  ui.fileBrowser.innerHTML = '<div class="browser-message"><div><b>G</b><span>Reading server directory...</span></div></div>';
+  ui.fileBrowser.innerHTML = `<div class="browser-message"><div><b>G</b><span>Reading ${state.config.localMode ? "local" : "server"} directory...</span></div></div>`;
   try {
     const payload = await fetchJSON(`${appURL("api/files")}?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`);
     state.currentPath = payload.path;

@@ -106,7 +106,7 @@
 
         <button class="server-source-card" id="server-files-button" type="button">
           <span class="source-glyph" aria-hidden="true"><i></i><i></i><i></i></span>
-          <span><strong>Open Server Files</strong><small>Browse configured data directories without uploading</small></span>
+          <span><strong id="file-source-title">Open Server Files</strong><small id="file-source-detail">Browse configured data directories without uploading</small></span>
           <span class="source-arrow" aria-hidden="true">→</span>
         </button>
 
@@ -174,7 +174,7 @@
   <dialog class="modal file-modal" id="file-dialog">
     <form method="dialog" class="dialog-shell">
       <header class="dialog-header">
-        <div><span>SERVER STORAGE</span><h2>Select Track Files</h2></div>
+        <div><span id="file-dialog-kicker">SERVER STORAGE</span><h2>Select Track Files</h2></div>
         <button class="dialog-close" value="cancel" aria-label="Close">×</button>
       </header>
       <div class="file-toolbar">

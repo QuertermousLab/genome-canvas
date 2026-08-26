@@ -33,7 +33,11 @@ from workspace_store import WorkspaceError, WorkspaceStore
 
 
 APP_DIR = Path(__file__).resolve().parent
-STATE_DIR = APP_DIR / ".genomecanvas"
+LOCAL_MODE = os.environ.get("GENOME_CANVAS_LOCAL_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+STATE_DIR = Path(os.path.expanduser(os.environ.get(
+    "GENOME_CANVAS_STATE_DIR",
+    str(APP_DIR / ".genomecanvas"),
+)))
 SESSION_DIR = STATE_DIR / "sessions"
 PROFILE_DIR = STATE_DIR / "profiles"
 WORKSPACE_DB_FILE = STATE_DIR / "workspaces.sqlite3"
@@ -134,6 +138,9 @@ def load_settings():
             print("Warning: data root does not exist: {}".format(path), file=sys.stderr)
             continue
 
+        if LOCAL_MODE and path == Path("/"):
+            label = "This Mac"
+
         root_id = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:12]
         roots[root_id] = {"path": path, "label": str(label)}
 
@@ -145,6 +152,7 @@ def load_settings():
 SETTINGS, DATA_ROOTS = load_settings()
 HOME_ROOT = Path(SETTINGS.get("homeRoot", "/home"))
 LOCAL_DBSNP_HG38 = Path(SETTINGS.get("dbSnpHg38") or APP_DIR / "data" / "hg38.dbsnp156.gz")
+LOCAL_WORKSPACE = {"id": "local", "name": "This Mac", "kind": "local", "home": None}
 
 
 def within_root(candidate, root):
@@ -164,6 +172,8 @@ def home_workspace_id(path):
 
 
 def discover_home_workspaces(home_root=HOME_ROOT):
+    if LOCAL_MODE:
+        return []
     home_root = normalized_absolute(home_root)
     workspaces = []
     try:
@@ -188,6 +198,8 @@ def discover_home_workspaces(home_root=HOME_ROOT):
 
 
 def workspace_catalog(store, home_root=HOME_ROOT):
+    if LOCAL_MODE:
+        return [LOCAL_WORKSPACE.copy()]
     hidden_ids = {item["id"] for item in store.hidden_homes()}
     system_workspaces = [item for item in discover_home_workspaces(home_root) if item["id"] not in hidden_ids]
     manual_workspaces = store.list_manual()
@@ -196,6 +208,8 @@ def workspace_catalog(store, home_root=HOME_ROOT):
 
 def find_workspace(store, workspace_id, home_root=HOME_ROOT):
     workspace_id = str(workspace_id or "")
+    if LOCAL_MODE:
+        return LOCAL_WORKSPACE.copy()
     return next((item for item in workspace_catalog(store, home_root) if item["id"] == workspace_id), None)
 
 
@@ -1182,6 +1196,16 @@ class GenomeCanvasHandler(BaseHTTPRequestHandler):
             return None
         return workspace
 
+    def reject_local_workspace_mutation(self, message):
+        if not LOCAL_MODE:
+            return False
+        headers = None
+        if self.command in ("POST", "PUT", "PATCH") and not self.discard_request_body(MAX_WORKSPACE_BYTES):
+            self.close_connection = True
+            headers = {"Connection": "close"}
+        self.send_json({"error": message}, 403, headers)
+        return True
+
     def same_origin_request(self):
         origin = self.headers.get("Origin")
         if not origin:
@@ -1210,6 +1234,14 @@ class GenomeCanvasHandler(BaseHTTPRequestHandler):
 
     def workspace_payload(self):
         workspaces = workspace_catalog(self.workspace_store, self.server.home_root)
+        if LOCAL_MODE:
+            workspace = LOCAL_WORKSPACE.copy()
+            return {
+                "selected": self.public_workspace(workspace),
+                "workspaces": [self.public_workspace(workspace)],
+                "hiddenHomeWorkspaces": [],
+                "localMode": True,
+            }
         existing_homes = {item["id"]: item for item in discover_home_workspaces(self.server.home_root)}
         hidden = [
             item for item in self.workspace_store.hidden_homes()
@@ -1262,6 +1294,7 @@ class GenomeCanvasHandler(BaseHTTPRequestHandler):
                     "user": workspace["name"],
                     "workspaceId": workspace["id"],
                     "workspaceKind": workspace["kind"],
+                    "localMode": LOCAL_MODE,
                     "defaultGenome": SETTINGS.get("defaultGenome", "hg38"),
                     "defaultLocus": SETTINGS.get("defaultLocus", "chr8:127,728,000-127,742,000"),
                     "defaultFileRoot": default_file["root"],
@@ -1352,6 +1385,8 @@ class GenomeCanvasHandler(BaseHTTPRequestHandler):
         return self.read_json_body(MAX_WORKSPACE_BYTES, "Workspace request")
 
     def handle_create_workspace(self):
+        if self.reject_local_workspace_mutation("Workspaces are disabled in local mode"):
+            return
         if not self.same_origin_request():
             self.send_api_error(403, "Cross-site workspace changes are not allowed")
             return
@@ -1369,6 +1404,8 @@ class GenomeCanvasHandler(BaseHTTPRequestHandler):
         )
 
     def handle_select_workspace(self):
+        if self.reject_local_workspace_mutation("Workspace switching is disabled in local mode"):
+            return
         if not self.same_origin_request():
             self.send_api_error(403, "Cross-site workspace changes are not allowed")
             return
@@ -1387,6 +1424,8 @@ class GenomeCanvasHandler(BaseHTTPRequestHandler):
         )
 
     def handle_restore_workspace(self):
+        if self.reject_local_workspace_mutation("Workspaces are disabled in local mode"):
+            return
         if not self.same_origin_request():
             self.send_api_error(403, "Cross-site workspace changes are not allowed")
             return
@@ -1475,6 +1514,8 @@ class GenomeCanvasHandler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         path = unquote(urlparse(self.path).path)
         if path.startswith("/api/workspaces/"):
+            if self.reject_local_workspace_mutation("Workspaces are disabled in local mode"):
+                return
             if not self.same_origin_request():
                 self.send_api_error(403, "Cross-site workspace changes are not allowed")
                 return
@@ -1634,7 +1675,7 @@ class GenomeCanvasHandler(BaseHTTPRequestHandler):
         first_segment, remaining = remainder.split("/", 1)
         scoped_parts = remaining.split("/", 1)
         scoped_workspace_id = unquote(first_segment)
-        looks_scoped = bool(re.fullmatch(r"(?:home|manual)-[a-f0-9]{18}", scoped_workspace_id))
+        looks_scoped = scoped_workspace_id == "local" or bool(re.fullmatch(r"(?:home|manual)-[a-f0-9]{18}", scoped_workspace_id))
         workspace = find_workspace(
             self.workspace_store,
             scoped_workspace_id,
@@ -1762,13 +1803,27 @@ def main():
     parser = argparse.ArgumentParser(description="Run Genome Canvas on the local network")
     parser.add_argument("--host", default=os.environ.get("GENOME_CANVAS_HOST", SETTINGS.get("host", "0.0.0.0")))
     parser.add_argument("--port", type=int, default=int(os.environ.get("GENOME_CANVAS_PORT", SETTINGS.get("port", 8000))))
+    parser.add_argument("--ready-file", help="Write the bound host and port as JSON after startup")
     args = parser.parse_args()
+
+    if LOCAL_MODE and args.host not in ("127.0.0.1", "localhost", "::1"):
+        parser.error("local mode must bind to a loopback address")
 
     SESSION_DIR.mkdir(parents=True, exist_ok=True)
     workspace_store = WorkspaceStore(WORKSPACE_DB_FILE)
     server = GenomeCanvasHTTPServer((args.host, args.port), GenomeCanvasHandler, workspace_store, HOME_ROOT)
     server.daemon_threads = True
-    print("Genome Canvas is running on http://{}:{}".format(args.host, args.port))
+    bound_host, bound_port = server.server_address[:2]
+    if args.ready_file:
+        ready_file = Path(os.path.expanduser(args.ready_file))
+        ready_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary_ready_file = ready_file.with_suffix(ready_file.suffix + ".tmp")
+        temporary_ready_file.write_text(
+            json.dumps({"host": bound_host, "port": bound_port}),
+            encoding="utf-8",
+        )
+        temporary_ready_file.replace(ready_file)
+    print("Genome Canvas is running on http://{}:{}".format(bound_host, bound_port))
     print("Serving {} configured data root(s):".format(len(DATA_ROOTS)))
     for item in DATA_ROOTS.values():
         print("  - {}: {}".format(item["label"], item["path"]))

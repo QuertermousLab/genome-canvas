@@ -531,5 +531,78 @@ subGroups biosample=Heart assay=RNA_seq
         self.assertEqual(body, b"bam")
 
 
+class LocalModeServerTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        (self.root / "local.bed").write_bytes(b"chr1\t5\t15\tlocal\n")
+        self.previous_local_mode = server.LOCAL_MODE
+        self.previous_roots = server.DATA_ROOTS
+        self.previous_sessions = server.SESSION_DIR
+        self.previous_profiles = server.PROFILE_DIR
+        server.LOCAL_MODE = True
+        server.DATA_ROOTS = {"local-root": {"path": self.root, "label": "This Mac"}}
+        server.SESSION_DIR = self.root / "sessions"
+        server.PROFILE_DIR = self.root / "profiles"
+        self.workspace_store = WorkspaceStore(self.root / "workspaces.sqlite3")
+        self.httpd = server.GenomeCanvasHTTPServer(
+            ("127.0.0.1", 0), server.GenomeCanvasHandler, self.workspace_store, self.root / "missing-homes"
+        )
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.port = self.httpd.server_address[1]
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=2)
+        server.LOCAL_MODE = self.previous_local_mode
+        server.DATA_ROOTS = self.previous_roots
+        server.SESSION_DIR = self.previous_sessions
+        server.PROFILE_DIR = self.previous_profiles
+        self.temporary.cleanup()
+
+    def request(self, method, path, body=None, headers=None):
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        connection.request(method, path, body=body, headers=headers or {})
+        response = connection.getresponse()
+        result = response.status, dict(response.getheaders()), response.read()
+        connection.close()
+        return result
+
+    def test_local_mode_auto_selects_one_workspace_and_serves_local_files(self):
+        status, _, body = self.request("GET", "/api/workspaces")
+        self.assertEqual(status, 200)
+        workspaces = json.loads(body)
+        self.assertTrue(workspaces["localMode"])
+        self.assertEqual(workspaces["selected"], {"id": "local", "name": "This Mac", "kind": "local"})
+        self.assertEqual(len(workspaces["workspaces"]), 1)
+
+        status, _, body = self.request("GET", "/api/config")
+        self.assertEqual(status, 200)
+        config = json.loads(body)
+        self.assertTrue(config["localMode"])
+        self.assertEqual(config["workspaceKind"], "local")
+        self.assertEqual(config["roots"], [{"id": "local-root", "label": "This Mac"}])
+
+        status, _, body = self.request("GET", "/api/track?root=local-root&path=local.bed")
+        self.assertEqual(status, 200)
+        track = json.loads(body)["track"]
+        self.assertEqual(track["url"], "/data/local/local-root/local.bed")
+        status, _, body = self.request("GET", track["url"])
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b"chr1\t5\t15\tlocal\n")
+
+    def test_local_mode_rejects_workspace_creation(self):
+        body = json.dumps({"name": "unused"}).encode("utf-8")
+        status, _, payload = self.request(
+            "POST",
+            "/api/workspaces",
+            body=body,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
+        )
+        self.assertEqual(status, 403, payload)
+
+
 if __name__ == "__main__":
     unittest.main()

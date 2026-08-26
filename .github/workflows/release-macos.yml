@@ -28,7 +28,7 @@ jobs:
               --verify-tag \
               --draft \
               --title "Genome Canvas Desktop ${version}" \
-              --notes "Native Genome Canvas Desktop builds for Apple Silicon and Intel Macs. Requires macOS 13 or later. The applications are ad-hoc signed; Control-click the app and choose Open if Gatekeeper requests confirmation."
+              --notes "Native Genome Canvas Desktop builds for Apple Silicon and Intel Macs. Version 1.4 adds a bundled local backend for browsing files on the Mac without /nfs or workspace switching, while retaining remote-server mode. Requires macOS 13 or later and Python 3. The applications are ad-hoc signed; Control-click the app and choose Open if Gatekeeper requests confirmation."
 
   build:
     needs: prepare
@@ -55,6 +55,8 @@ jobs:
           app="dist/${{ matrix.architecture }}/Genome Canvas.app"
           binary="${app}/Contents/MacOS/GenomeCanvasDesktop"
           test "$(lipo -archs "${binary}")" = "${{ matrix.architecture }}"
+          test -f "${app}/Contents/Resources/LocalBackend/server.py"
+          test -f "${app}/Contents/Resources/LocalBackend/vendor/igv.min.js"
           codesign --verify --deep --strict "${app}"
           mv "dist/${{ matrix.architecture }}/GenomeCanvasDesktop-macOS.zip" \
             "GenomeCanvasDesktop-macOS-${{ matrix.architecture }}.zip"

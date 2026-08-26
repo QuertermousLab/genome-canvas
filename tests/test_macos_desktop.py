@@ -12,7 +12,7 @@ class MacOSDesktopClientTests(unittest.TestCase):
         with (MAC_APP / "Resources" / "Info.plist").open("rb") as stream:
             info = plistlib.load(stream)
         self.assertEqual(info["CFBundleIdentifier"], "org.genomecanvas.desktop")
-        self.assertEqual(info["CFBundleShortVersionString"], "1.3.1")
+        self.assertEqual(info["CFBundleShortVersionString"], "1.4.0")
         self.assertEqual(info["LSMinimumSystemVersion"], "13.0")
         self.assertTrue(info["NSAppTransportSecurity"]["NSAllowsArbitraryLoadsInWebContent"])
         self.assertNotIn("NSAllowsArbitraryLoads", info["NSAppTransportSecurity"])
@@ -43,6 +43,21 @@ class MacOSDesktopClientTests(unittest.TestCase):
         self.assertIn('action:@selector(createWorkspace:)', source)
         self.assertIn('action:@selector(deleteWorkspace:)', source)
 
+    def test_client_can_launch_a_single_workspace_local_backend(self):
+        source = (MAC_APP / "Sources" / "main.m").read_text(encoding="utf-8")
+        web_app = (ROOT / "app.js").read_text(encoding="utf-8")
+        self.assertIn("NSTask *localServerTask", source)
+        self.assertIn('environment[@"GENOME_CANVAS_LOCAL_MODE"] = @"1"', source)
+        self.assertIn('environment[@"GENOME_DATA_ROOTS"] = @"/"', source)
+        self.assertIn('@"--ready-file"', source)
+        self.assertIn('@"Use Local Backend"', source)
+        self.assertIn('@"Open Local Files"', source)
+        self.assertIn("self.workspaceControls.hidden = self.localMode", source)
+        self.assertIn("self.localMode = NO", source)
+        self.assertIn("[self stopLocalBackend];\n    self.localMode = NO", source)
+        self.assertIn('setObject:self.serverAddress forKey:GCServerDefaultsKey', source)
+        self.assertIn("Boolean(state.config?.localMode)", web_app)
+
     def test_build_script_targets_supported_mac_architectures(self):
         script = (MAC_APP / "build.sh").read_text(encoding="utf-8")
         self.assertIn("arm64|x86_64", script)
@@ -50,7 +65,9 @@ class MacOSDesktopClientTests(unittest.TestCase):
         self.assertIn("xcrun --sdk macosx clang", script)
         self.assertIn("codesign --force --deep --sign -", script)
         self.assertIn("Resources/GenomeCanvas-1024.png", script)
-        self.assertNotIn("favicon.svg", script)
+        self.assertIn('Contents/Resources/LocalBackend', script)
+        self.assertIn('server.py workspace_store.py index.html styles.css app.js', script)
+        self.assertIn('public/favicon.svg', script)
         self.assertTrue((MAC_APP / "Resources" / "GenomeCanvas-1024.png").is_file())
 
 

@@ -117,6 +117,15 @@ The native shell provides workspace/project controls, track reordering,
 genome/locus navigation, highlights, sharing and export. WebKit is limited to
 the IGV rendering surface and server-backed dialogs.
 
+The desktop app has two data-source modes:
+
+- **This Mac** starts the backend bundled inside the app on a random loopback
+  port. **Open Local Files** browses files readable by the current macOS user;
+  no `/nfs` mount, upload, server installation, or workspace switching is
+  required. Local Favorites are stored under `~/Library/Application Support/Genome Canvas`.
+- **Server** connects to an existing Genome Canvas LAN deployment and retains
+  its per-user/per-project workspace behavior.
+
 Download a prebuilt app for your Mac:
 
 - [Apple Silicon (arm64)](https://github.com/zhaoshuoxp/genome-canvas/releases/latest/download/GenomeCanvasDesktop-macOS-arm64.zip)
@@ -139,9 +148,12 @@ cd macos/GenomeCanvasDesktop
 open "dist/Genome Canvas.app"
 ```
 
-The client initially points to `http://127.0.0.1:8000/`. Choose
-**Genome Canvas → Server Address…** to enter a LAN hostname or a reverse-proxy
-path such as `http://genome-canvas.example.internal/genome-canvas/`.
+Every launch defaults to **Server**. Enter its IP/port once and the app remembers
+it for later launches. Choose **This Mac** or **Server** in the native
+sidebar, or use **Genome Canvas → Use Local Backend** and **Genome Canvas →
+Connect to Server…**. Entering remote mode automatically stops the local
+backend. A server address may be a LAN hostname or a reverse-proxy path such as
+`http://genome-canvas.example.internal/genome-canvas/`.
 
 ## Production and migration
 

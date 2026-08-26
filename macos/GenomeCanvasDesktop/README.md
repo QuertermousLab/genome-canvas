@@ -1,17 +1,21 @@
 # Genome Canvas Desktop for macOS
 
-Genome Canvas Desktop is a native AppKit genomics workbench. Its workspace,
-track library, locus search, genome selection, zoom, highlight, share, and
-export controls are macOS controls; the embedded `WKWebView` is limited to the
-IGV genome canvas and the server-backed data/profile dialogs. It does not
-launch Safari or duplicate the genome-browser backend.
+Genome Canvas Desktop is a native AppKit genomics workbench. Its data-source,
+workspace, track library, locus search, genome selection, zoom, highlight,
+share, and export controls are macOS controls; the embedded `WKWebView` is
+limited to the IGV genome canvas and data/profile dialogs. It does not launch
+Safari.
+
+It can either start its bundled local backend or connect to a shared Genome
+Canvas server. Local mode browses files on the Mac directly and does not need
+`/nfs`, uploads, a separate server checkout, or user/workspace switching.
 
 ## Requirements
 
 - macOS 13 or later
 - Apple Silicon or Intel Mac
-- Xcode Command Line Tools (`xcode-select --install`)
-- Network access to your Genome Canvas server
+- Python 3 (provided by Xcode Command Line Tools: `xcode-select --install`)
+- Network access only when using **Server** mode
 
 ## Build
 
@@ -57,10 +61,18 @@ selects its bundled compiler automatically.
 
 ## Behavior
 
-- The default server is `http://127.0.0.1:8000/`. Use **Genome Canvas →
-  Server Address…** to enter a LAN server or reverse-proxy URL.
-- Change the saved server from **Genome Canvas → Server Address…**. There is no
-  browser-style address bar in the main window.
+- Every launch starts in **Server** mode. Enter the server IP/port once with
+  **Genome Canvas → Connect to Server…**; the address persists between launches.
+- **This Mac** starts the bundled backend on a dynamically assigned
+  `127.0.0.1` port, labels the file root **This Mac**, and stops the backend
+  when the app exits. It can browse files readable by the current macOS user.
+- Local mode uses one local context: it does not scan `/home`, mount `/nfs`, or
+  show workspace/profile-user switching. Local Favorites and file history are
+  stored under `~/Library/Application Support/Genome Canvas`.
+- Use **Genome Canvas → Connect to Server…** to enter a LAN server or
+  reverse-proxy URL. Remote mode retains server workspaces and their isolated
+  Favorites and automatically stops any local backend started by the app.
+  There is no browser-style address bar in the main window.
 - Cookies use WebKit's persistent data store, so the selected workspace remains
   selected between launches.
 - Workspaces and loaded tracks are shown in the native sidebar. Tracks can be

@@ -10,8 +10,17 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
 @interface GCAppDelegate : NSObject <NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandler, NSTableViewDataSource, NSTableViewDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) WKWebView *webView;
+@property(nonatomic, strong) NSSegmentedControl *connectionModeControl;
+@property(nonatomic, strong) NSTextField *workspaceLabel;
+@property(nonatomic, strong) NSStackView *workspaceControls;
 @property(nonatomic, strong) NSPopUpButton *workspacePopup;
 @property(nonatomic, strong) NSButton *deleteWorkspaceButton;
+@property(nonatomic, strong) NSButton *filesButton;
+@property(nonatomic, strong) NSMenuItem *openFilesMenuItem;
+@property(nonatomic, strong) NSMenuItem *localBackendMenuItem;
+@property(nonatomic, strong) NSMenuItem *remoteServerMenuItem;
+@property(nonatomic, strong) NSLayoutConstraint *remoteSourceTopConstraint;
+@property(nonatomic, strong) NSLayoutConstraint *localSourceTopConstraint;
 @property(nonatomic, strong) NSPopUpButton *genomePopup;
 @property(nonatomic, strong) NSTextField *locusField;
 @property(nonatomic, strong) NSTextField *statusDot;
@@ -28,6 +37,10 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
 @property(nonatomic, copy) NSArray<NSDictionary *> *tracks;
 @property(nonatomic, copy) NSArray<NSDictionary *> *workspaces;
 @property(nonatomic, copy) NSString *serverAddress;
+@property(nonatomic) BOOL localMode;
+@property(nonatomic, strong) NSTask *localServerTask;
+@property(nonatomic, strong) NSFileHandle *localServerLogHandle;
+@property(nonatomic, copy) NSString *localServerAddress;
 @end
 
 @implementation GCAppDelegate
@@ -36,7 +49,10 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
     self.downloadDestinations = [NSMapTable weakToStrongObjectsMapTable];
     self.tracks = @[];
     self.workspaces = @[];
-    self.serverAddress = [[NSUserDefaults standardUserDefaults] stringForKey:GCServerDefaultsKey] ?: GCDefaultServerAddress;
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString *savedAddress = [defaults stringForKey:GCServerDefaultsKey];
+    self.serverAddress = savedAddress ?: GCDefaultServerAddress;
+    self.localMode = NO;
     [self buildApplicationMenu];
 
     NSRect frame = NSMakeRect(0, 0, 1480, 900);
@@ -69,7 +85,9 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
 
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
-    [self loadServerAddress:self.serverAddress remember:YES];
+    [self updateConnectionUI];
+    if (self.localMode) [self startLocalBackend];
+    else [self loadServerAddress:self.serverAddress remember:NO];
 }
 
 - (NSVisualEffectView *)buildSidebar {
@@ -105,7 +123,15 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
     brand.spacing = 11;
     [sidebar addSubview:brand];
 
-    NSTextField *workspaceLabel = [self sectionLabel:@"WORKSPACE"];
+    NSTextField *sourceLabel = [self sectionLabel:@"DATA SOURCE"];
+    self.connectionModeControl = [NSSegmentedControl segmentedControlWithLabels:@[@"This Mac", @"Server"]
+        trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(changeConnectionMode:)];
+    self.connectionModeControl.translatesAutoresizingMaskIntoConstraints = NO;
+    self.connectionModeControl.selectedSegment = self.localMode ? 0 : 1;
+    [sidebar addSubview:sourceLabel];
+    [sidebar addSubview:self.connectionModeControl];
+
+    self.workspaceLabel = [self sectionLabel:@"WORKSPACE"];
     self.workspacePopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     self.workspacePopup.translatesAutoresizingMaskIntoConstraints = NO;
     self.workspacePopup.font = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
@@ -118,17 +144,17 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
     self.deleteWorkspaceButton = [self compactButton:@"trash" tip:@"Delete selected temporary project" action:@selector(deleteWorkspace:)];
     self.deleteWorkspaceButton.enabled = NO;
     NSButton *manageWorkspaceButton = [self compactButton:@"gearshape" tip:@"Manage all workspaces" action:@selector(manageWorkspaces:)];
-    NSStackView *workspaceControls = [NSStackView stackViewWithViews:@[
+    self.workspaceControls = [NSStackView stackViewWithViews:@[
         self.workspacePopup, createWorkspaceButton, self.deleteWorkspaceButton, manageWorkspaceButton
     ]];
-    workspaceControls.translatesAutoresizingMaskIntoConstraints = NO;
-    workspaceControls.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    workspaceControls.alignment = NSLayoutAttributeCenterY;
-    workspaceControls.spacing = 5;
-    [sidebar addSubview:workspaceLabel];
-    [sidebar addSubview:workspaceControls];
+    self.workspaceControls.translatesAutoresizingMaskIntoConstraints = NO;
+    self.workspaceControls.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    self.workspaceControls.alignment = NSLayoutAttributeCenterY;
+    self.workspaceControls.spacing = 5;
+    [sidebar addSubview:self.workspaceLabel];
+    [sidebar addSubview:self.workspaceControls];
 
-    NSButton *filesButton = [self sidebarButton:@"Open Server Files" symbol:@"externaldrive" action:@selector(openServerFiles:)];
+    self.filesButton = [self sidebarButton:@"Open Server Files" symbol:@"externaldrive" action:@selector(openServerFiles:)];
     NSButton *publicButton = [self sidebarButton:@"Public Data" symbol:@"network" action:@selector(openPublicData:)];
     NSButton *referenceButton = [self sidebarButton:@"Custom Reference" symbol:@"circle.grid.cross" action:@selector(openCustomReference:)];
     publicButton.font = [NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium];
@@ -137,16 +163,16 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
     referenceButton.alignment = NSTextAlignmentCenter;
     NSView *sourceButtons = [[NSView alloc] initWithFrame:NSZeroRect];
     sourceButtons.translatesAutoresizingMaskIntoConstraints = NO;
-    [sourceButtons addSubview:filesButton];
+    [sourceButtons addSubview:self.filesButton];
     [sourceButtons addSubview:publicButton];
     [sourceButtons addSubview:referenceButton];
     [sidebar addSubview:sourceButtons];
 
     [NSLayoutConstraint activateConstraints:@[
-        [filesButton.topAnchor constraintEqualToAnchor:sourceButtons.topAnchor],
-        [filesButton.leadingAnchor constraintEqualToAnchor:sourceButtons.leadingAnchor],
-        [filesButton.trailingAnchor constraintEqualToAnchor:sourceButtons.trailingAnchor],
-        [publicButton.topAnchor constraintEqualToAnchor:filesButton.bottomAnchor constant:7],
+        [self.filesButton.topAnchor constraintEqualToAnchor:sourceButtons.topAnchor],
+        [self.filesButton.leadingAnchor constraintEqualToAnchor:sourceButtons.leadingAnchor],
+        [self.filesButton.trailingAnchor constraintEqualToAnchor:sourceButtons.trailingAnchor],
+        [publicButton.topAnchor constraintEqualToAnchor:self.filesButton.bottomAnchor constant:7],
         [publicButton.leadingAnchor constraintEqualToAnchor:sourceButtons.leadingAnchor],
         [referenceButton.topAnchor constraintEqualToAnchor:publicButton.topAnchor],
         [referenceButton.leadingAnchor constraintEqualToAnchor:publicButton.trailingAnchor constant:7],
@@ -213,13 +239,18 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
         [brand.topAnchor constraintEqualToAnchor:sidebar.safeAreaLayoutGuide.topAnchor constant:18],
         [brand.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:16],
         [brand.trailingAnchor constraintLessThanOrEqualToAnchor:sidebar.trailingAnchor constant:-12],
-        [workspaceLabel.topAnchor constraintEqualToAnchor:brand.bottomAnchor constant:22],
-        [workspaceLabel.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:16],
-        [workspaceControls.topAnchor constraintEqualToAnchor:workspaceLabel.bottomAnchor constant:5],
-        [workspaceControls.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:13],
-        [workspaceControls.trailingAnchor constraintEqualToAnchor:sidebar.trailingAnchor constant:-13],
+        [sourceLabel.topAnchor constraintEqualToAnchor:brand.bottomAnchor constant:22],
+        [sourceLabel.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:16],
+        [self.connectionModeControl.topAnchor constraintEqualToAnchor:sourceLabel.bottomAnchor constant:5],
+        [self.connectionModeControl.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:13],
+        [self.connectionModeControl.trailingAnchor constraintEqualToAnchor:sidebar.trailingAnchor constant:-13],
+        [self.connectionModeControl.heightAnchor constraintEqualToConstant:30],
+        [self.workspaceLabel.topAnchor constraintEqualToAnchor:self.connectionModeControl.bottomAnchor constant:14],
+        [self.workspaceLabel.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:16],
+        [self.workspaceControls.topAnchor constraintEqualToAnchor:self.workspaceLabel.bottomAnchor constant:5],
+        [self.workspaceControls.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:13],
+        [self.workspaceControls.trailingAnchor constraintEqualToAnchor:sidebar.trailingAnchor constant:-13],
         [self.workspacePopup.heightAnchor constraintEqualToConstant:30],
-        [sourceButtons.topAnchor constraintEqualToAnchor:workspaceControls.bottomAnchor constant:17],
         [sourceButtons.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:13],
         [sourceButtons.trailingAnchor constraintEqualToAnchor:sidebar.trailingAnchor constant:-13],
         [trackHeading.topAnchor constraintEqualToAnchor:sourceButtons.bottomAnchor constant:22],
@@ -236,6 +267,8 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
         [status.trailingAnchor constraintLessThanOrEqualToAnchor:sidebar.trailingAnchor constant:-12],
         [status.bottomAnchor constraintEqualToAnchor:sidebar.safeAreaLayoutGuide.bottomAnchor constant:-12]
     ]];
+    self.remoteSourceTopConstraint = [sourceButtons.topAnchor constraintEqualToAnchor:self.workspaceControls.bottomAnchor constant:17];
+    self.localSourceTopConstraint = [sourceButtons.topAnchor constraintEqualToAnchor:self.connectionModeControl.bottomAnchor constant:17];
     return sidebar;
 }
 
@@ -391,6 +424,7 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender { return YES; }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
+    [self stopLocalBackend];
     [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"genomeCanvas"];
 }
 
@@ -404,9 +438,13 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
     NSMenuItem *applicationItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
     NSMenu *applicationMenu = [[NSMenu alloc] initWithTitle:@"Genome Canvas"];
     [applicationMenu addItemWithTitle:@"About Genome Canvas" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
-    NSMenuItem *server = [[NSMenuItem alloc] initWithTitle:@"Server Address…" action:@selector(editServerAddress:) keyEquivalent:@","];
-    server.target = self;
-    [applicationMenu addItem:server];
+    [applicationMenu addItem:[NSMenuItem separatorItem]];
+    self.localBackendMenuItem = [[NSMenuItem alloc] initWithTitle:@"Use Local Backend" action:@selector(useLocalBackend:) keyEquivalent:@""];
+    self.localBackendMenuItem.target = self;
+    [applicationMenu addItem:self.localBackendMenuItem];
+    self.remoteServerMenuItem = [[NSMenuItem alloc] initWithTitle:@"Connect to Server…" action:@selector(editServerAddress:) keyEquivalent:@","];
+    self.remoteServerMenuItem.target = self;
+    [applicationMenu addItem:self.remoteServerMenuItem];
     [applicationMenu addItem:[NSMenuItem separatorItem]];
     [applicationMenu addItemWithTitle:@"Hide Genome Canvas" action:@selector(hide:) keyEquivalent:@"h"];
     [applicationMenu addItemWithTitle:@"Quit Genome Canvas" action:@selector(terminate:) keyEquivalent:@"q"];
@@ -415,9 +453,9 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
 
     NSMenuItem *fileItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
     NSMenu *fileMenu = [[NSMenu alloc] initWithTitle:@"File"];
-    NSMenuItem *open = [[NSMenuItem alloc] initWithTitle:@"Open Server Files…" action:@selector(openServerFiles:) keyEquivalent:@"o"];
-    open.target = self;
-    [fileMenu addItem:open];
+    self.openFilesMenuItem = [[NSMenuItem alloc] initWithTitle:@"Open Server Files…" action:@selector(openServerFiles:) keyEquivalent:@"o"];
+    self.openFilesMenuItem.target = self;
+    [fileMenu addItem:self.openFilesMenuItem];
     NSMenuItem *publicData = [[NSMenuItem alloc] initWithTitle:@"Connect Public Data…" action:@selector(openPublicData:) keyEquivalent:@"d"];
     publicData.target = self;
     [fileMenu addItem:publicData];
@@ -452,6 +490,159 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
     [NSApp setMainMenu:mainMenu];
 }
 
+- (void)updateConnectionUI {
+    self.connectionModeControl.selectedSegment = self.localMode ? 0 : 1;
+    self.workspaceLabel.hidden = self.localMode;
+    self.workspaceControls.hidden = self.localMode;
+    [NSLayoutConstraint deactivateConstraints:@[self.remoteSourceTopConstraint, self.localSourceTopConstraint]];
+    NSLayoutConstraint *sourceTopConstraint = self.localMode ? self.localSourceTopConstraint : self.remoteSourceTopConstraint;
+    sourceTopConstraint.active = YES;
+    self.filesButton.title = self.localMode ? @"Open Local Files" : @"Open Server Files";
+    self.openFilesMenuItem.title = self.localMode ? @"Open Local Files…" : @"Open Server Files…";
+    self.localBackendMenuItem.state = self.localMode ? NSControlStateValueOn : NSControlStateValueOff;
+    self.remoteServerMenuItem.state = self.localMode ? NSControlStateValueOff : NSControlStateValueOn;
+    self.window.subtitle = self.localMode ? @"Local genomics workbench" : @"Server-connected genomics workbench";
+}
+
+- (NSString *)localPythonPath {
+    NSFileManager *manager = [NSFileManager defaultManager];
+    for (NSString *candidate in @[@"/usr/bin/python3", @"/opt/homebrew/bin/python3", @"/usr/local/bin/python3"]) {
+        if ([manager isExecutableFileAtPath:candidate]) return candidate;
+    }
+    return nil;
+}
+
+- (NSURL *)localApplicationSupportURL:(NSError **)error {
+    NSURL *base = [[[NSFileManager defaultManager] URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask] firstObject];
+    NSURL *directory = [base URLByAppendingPathComponent:@"Genome Canvas" isDirectory:YES];
+    if (![[NSFileManager defaultManager] createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:error]) return nil;
+    return directory;
+}
+
+- (void)showLocalBackendError:(NSString *)message {
+    [self setStatus:@"Local backend unavailable" state:@"error"];
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleCritical;
+    alert.messageText = @"Local Backend Could Not Start";
+    alert.informativeText = message ?: @"The bundled local backend could not be started.";
+    [alert addButtonWithTitle:@"OK"];
+    [alert beginSheetModalForWindow:self.window completionHandler:nil];
+}
+
+- (void)startLocalBackend {
+    if (self.localServerTask.running) {
+        if (self.localServerAddress.length) [self loadServerAddress:self.localServerAddress remember:NO];
+        return;
+    }
+
+    NSURL *scriptURL = [[NSBundle mainBundle] URLForResource:@"server" withExtension:@"py" subdirectory:@"LocalBackend"];
+    NSString *pythonPath = [self localPythonPath];
+    if (!scriptURL || !pythonPath) {
+        [self showLocalBackendError:@"The local backend resources or Python 3 runtime were not found. Install Xcode Command Line Tools, or connect to a Genome Canvas server instead."];
+        return;
+    }
+
+    NSError *directoryError = nil;
+    NSURL *supportURL = [self localApplicationSupportURL:&directoryError];
+    if (!supportURL) {
+        [self showLocalBackendError:directoryError.localizedDescription];
+        return;
+    }
+    NSURL *readyURL = [supportURL URLByAppendingPathComponent:@"local-backend-ready.json"];
+    NSURL *logURL = [supportURL URLByAppendingPathComponent:@"local-backend.log"];
+    NSFileManager *manager = [NSFileManager defaultManager];
+    [manager removeItemAtURL:readyURL error:nil];
+    [manager createFileAtPath:logURL.path contents:[NSData data] attributes:nil];
+    self.localServerLogHandle = [NSFileHandle fileHandleForWritingAtPath:logURL.path];
+
+    NSMutableDictionary<NSString *, NSString *> *environment = [[[NSProcessInfo processInfo] environment] mutableCopy];
+    environment[@"GENOME_CANVAS_LOCAL_MODE"] = @"1";
+    environment[@"GENOME_CANVAS_STATE_DIR"] = supportURL.path;
+    environment[@"GENOME_DATA_ROOTS"] = @"/";
+    environment[@"PYTHONUNBUFFERED"] = @"1";
+
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:pythonPath];
+    task.currentDirectoryURL = [scriptURL URLByDeletingLastPathComponent];
+    task.arguments = @[scriptURL.path, @"--host", @"127.0.0.1", @"--port", @"0", @"--ready-file", readyURL.path];
+    task.environment = environment;
+    task.standardOutput = self.localServerLogHandle;
+    task.standardError = self.localServerLogHandle;
+    __weak typeof(self) weakSelf = self;
+    task.terminationHandler = ^(NSTask *finishedTask) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf || strongSelf.localServerTask != finishedTask) return;
+            strongSelf.localServerTask = nil;
+            if (strongSelf.localMode) [strongSelf showLocalBackendError:[NSString stringWithFormat:@"The local backend stopped unexpectedly. See %@", logURL.path]];
+        });
+    };
+    self.localServerTask = task;
+    [self setStatus:@"Starting local backend" state:@"busy"];
+    NSError *launchError = nil;
+    if (![task launchAndReturnError:&launchError]) {
+        self.localServerTask = nil;
+        [self showLocalBackendError:launchError.localizedDescription];
+        return;
+    }
+    [self waitForLocalBackendReadyAtURL:readyURL attempt:0];
+}
+
+- (void)waitForLocalBackendReadyAtURL:(NSURL *)readyURL attempt:(NSInteger)attempt {
+    if (!self.localMode || !self.localServerTask.running) return;
+    NSData *data = [NSData dataWithContentsOfURL:readyURL];
+    NSDictionary *payload = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    NSNumber *port = [payload isKindOfClass:[NSDictionary class]] ? payload[@"port"] : nil;
+    if (port.integerValue > 0) {
+        self.localServerAddress = [NSString stringWithFormat:@"http://127.0.0.1:%ld/?local=1", (long)port.integerValue];
+        [self loadServerAddress:self.localServerAddress remember:NO];
+        return;
+    }
+    if (attempt >= 100) {
+        [self stopLocalBackend];
+        [self showLocalBackendError:@"The local backend did not become ready within 10 seconds. See ~/Library/Application Support/Genome Canvas/local-backend.log."];
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self waitForLocalBackendReadyAtURL:readyURL attempt:attempt + 1];
+    });
+}
+
+- (void)stopLocalBackend {
+    NSTask *task = self.localServerTask;
+    self.localServerTask = nil;
+    self.localServerAddress = nil;
+    if (task.running) [task terminate];
+    [self.localServerLogHandle closeFile];
+    self.localServerLogHandle = nil;
+}
+
+- (void)activateLocalBackend {
+    self.localMode = YES;
+    [self updateConnectionUI];
+    [self startLocalBackend];
+}
+
+- (void)connectToRemoteServer:(NSString *)address {
+    if (![self normalizedURL:address]) {
+        [self setStatus:@"Invalid server address" state:@"error"];
+        [self updateConnectionUI];
+        NSBeep();
+        return;
+    }
+    [self stopLocalBackend];
+    self.localMode = NO;
+    [self updateConnectionUI];
+    [self loadServerAddress:address remember:YES];
+}
+
+- (void)changeConnectionMode:(id)sender {
+    if (self.connectionModeControl.selectedSegment == 0) [self activateLocalBackend];
+    else [self editServerAddress:sender];
+}
+
+- (void)useLocalBackend:(id)sender { [self activateLocalBackend]; }
+
 - (NSURL *)normalizedURL:(NSString *)value {
     NSString *candidate = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (!candidate.length) return nil;
@@ -481,8 +672,10 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
 - (void)loadServerAddress:(NSString *)value remember:(BOOL)remember {
     NSURL *url = [self normalizedURL:value];
     if (!url) { [self setStatus:@"Invalid server address" state:@"error"]; NSBeep(); return; }
-    self.serverAddress = [self storableAddressFromURL:url];
-    if (remember) [[NSUserDefaults standardUserDefaults] setObject:self.serverAddress forKey:GCServerDefaultsKey];
+    if (remember) {
+        self.serverAddress = [self storableAddressFromURL:url];
+        [[NSUserDefaults standardUserDefaults] setObject:self.serverAddress forKey:GCServerDefaultsKey];
+    }
     [self setStatus:@"Connecting" state:@"busy"];
     NSURLRequest *request = [NSURLRequest requestWithURL:url cachePolicy:NSURLRequestReloadRevalidatingCacheData timeoutInterval:30];
     [self.webView loadRequest:request];
@@ -751,15 +944,16 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
 
 - (void)editServerAddress:(id)sender {
     NSAlert *alert = [[NSAlert alloc] init];
-    alert.messageText = @"Genome Canvas Server";
-    alert.informativeText = @"Enter the LAN address. The app adds desktop rendering mode automatically.";
+    alert.messageText = @"Connect to Genome Canvas Server";
+    alert.informativeText = @"Enter a LAN server address. The local backend will stop after the connection is accepted.";
     [alert addButtonWithTitle:@"Connect"];
     [alert addButtonWithTitle:@"Cancel"];
     NSTextField *input = [NSTextField textFieldWithString:self.serverAddress ?: GCDefaultServerAddress];
     input.frame = NSMakeRect(0, 0, 390, 26);
     alert.accessoryView = input;
     [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse result) {
-        if (result == NSAlertFirstButtonReturn) [self loadServerAddress:input.stringValue remember:YES];
+        if (result == NSAlertFirstButtonReturn) [self connectToRemoteServer:input.stringValue];
+        else [self updateConnectionUI];
     }];
 }
 
