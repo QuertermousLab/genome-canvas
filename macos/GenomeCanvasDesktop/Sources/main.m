@@ -471,6 +471,7 @@ typedef NS_ENUM(NSInteger, GCButtonStyle) {
 
     [self.webView addObserver:self forKeyPath:@"estimatedProgress"
                       options:NSKeyValueObservingOptionInitial | NSKeyValueObservingOptionNew context:NULL];
+    [self.webView addObserver:self forKeyPath:@"loading" options:NSKeyValueObservingOptionNew context:NULL];
     [NSApp addObserver:self forKeyPath:@"effectiveAppearance" options:NSKeyValueObservingOptionNew context:NULL];
     [self applyAppearancePreference];
 
@@ -1023,6 +1024,8 @@ typedef NS_ENUM(NSInteger, GCButtonStyle) {
 
 - (void)dealloc {
     @try { [self.webView removeObserver:self forKeyPath:@"estimatedProgress"]; }
+    @catch (__unused NSException *exception) {}
+    @try { [self.webView removeObserver:self forKeyPath:@"loading"]; }
     @catch (__unused NSException *exception) {}
     @try { [NSApp removeObserver:self forKeyPath:@"effectiveAppearance"]; }
     @catch (__unused NSException *exception) {}
@@ -1604,12 +1607,14 @@ typedef NS_ENUM(NSInteger, GCButtonStyle) {
 }
 
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSKeyValueChangeKey,id> *)change context:(void *)context {
-    if ([keyPath isEqualToString:@"estimatedProgress"]) {
+    if ([keyPath isEqualToString:@"estimatedProgress"] || [keyPath isEqualToString:@"loading"]) {
         CGFloat width = self.progressBar.superview.bounds.size.width;
         self.progressWidthConstraint.constant = width * self.webView.estimatedProgress;
         self.progressBar.hidden = !self.webView.loading;
+        // "loading" changes after the final progress event, so follow it directly.
         NSString *symbol = self.webView.loading ? @"xmark" : @"arrow.clockwise";
         self.reloadButton.image = GCSymbol(symbol, 13, @"Reload or stop");
+        self.reloadButton.toolTip = self.webView.loading ? @"Stop loading" : @"Reload from server";
         [self.reloadButton refreshColors];
         return;
     }

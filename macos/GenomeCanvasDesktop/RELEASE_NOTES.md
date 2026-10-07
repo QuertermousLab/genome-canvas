@@ -1,5 +1,12 @@
 Native Genome Canvas Desktop builds for Apple Silicon and Intel Macs.
 
+## What's new in 1.5.1
+
+- Native window redesigned to match the web interface: Nord light and dark themes, the same fonts, and a sidebar with the same file, public-data, reference and track-list controls
+- The appearance follows macOS automatically; choose Light or Dark with the toolbar button or **View → Appearance** (**Use System Setting** returns to automatic). The genome canvas switches with it
+- Fixed **This Mac** mode, which showed a "404 Not found" page in 1.5.0
+- Track rows show a remove button on hover; **Edit → Remove Selected Track** (⌘⌫) removes the selected one
+
 ## What's new in 1.5
 
 - Redesigned Nord light and dark interface that follows the macOS appearance, with a dark track canvas in dark mode (track colors are unchanged; PNG exports stay white)
