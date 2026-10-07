@@ -1,8 +1,10 @@
 import { assayTypeForTrack, automaticTrackColor } from "./track-colors.mjs?v=20260821.4";
-import { installGradientSignalRenderer } from "./signal-style.mjs?v=20260821.6";
+import { installGradientSignalRenderer } from "./signal-style.mjs?v=20261007.2";
 import { installRefSeqAllStyle } from "./annotation-style.mjs?v=20260821.3";
-import { configureHicHeatmap, installHicHeatmapRenderer } from "./hic-heatmap.mjs?v=20260821.2";
-import { installManhattanRenderer } from "./manhattan-style.mjs?v=20260824.3";
+import { configureHicHeatmap, installHicHeatmapRenderer } from "./hic-heatmap.mjs?v=20261007.2";
+import { installManhattanRenderer } from "./manhattan-style.mjs?v=20261007.2";
+import { DARK_CANVAS, LIGHT_CANVAS, installDarkCanvasAdapter, setCanvasTheme } from "./canvas-theme.mjs?v=20261007.2";
+import { normalizeReferenceResources } from "./reference-resources.mjs?v=20261005.1";
 import {
   DEFAULT_HIGHLIGHT_COLOR,
   HIGHLIGHT_FILL_ALPHA,
@@ -20,6 +22,9 @@ import {
   inferHubKind,
   normalizeWashUHub,
 } from "./public-hubs.mjs?v=20260824.3";
+
+// Must run before IGV.js paints its first canvas.
+installDarkCanvasAdapter();
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -56,15 +61,15 @@ function localDataURL(url) {
 }
 
 function normalizeTrackURLs(config) {
-  const normalized = { ...config };
+  const normalized = normalizeReferenceResources(config, state.config, appBaseURL);
   if (normalized.url) normalized.url = localDataURL(normalized.url);
   if (normalized.indexURL) normalized.indexURL = localDataURL(normalized.indexURL);
   return normalized;
 }
 
 function normalizeReferenceURLs(reference) {
-  const normalized = { ...reference };
-  for (const key of ["fastaURL", "indexURL", "twoBitURL", "cytobandURL", "aliasURL"]) {
+  const normalized = normalizeReferenceResources(reference, state.config, appBaseURL);
+  for (const key of ["fastaURL", "indexURL", "twoBitURL", "cytobandURL", "aliasURL", "chromSizesURL", "twoBitBptURL", "chromAliasBbURL", "cytobandBbURL", "maneBbURL", "maneTrixURL", "rsdbURL"]) {
     if (normalized[key]) normalized[key] = localDataURL(normalized[key]);
   }
   return normalized;
@@ -175,7 +180,10 @@ function desktopTrackViews() {
 }
 
 function desktopStateSnapshot() {
-  const loci = state.browser?.currentLoci?.();
+  const frames = state.browser?.referenceFrameList;
+  const loci = Array.isArray(frames) && frames.length
+    ? frames.map((frame) => frame.getLocusString?.() || frame.label).filter(Boolean)
+    : state.browser?.currentLoci?.();
   const locus = Array.isArray(loci) ? loci.join(" ") : (loci || ui.locus.value || "");
   return {
     type: "state",
@@ -229,8 +237,8 @@ const TRACK_REORDER_CSS = `
     flex: 0 0 34px !important;
     padding: 0 5px !important;
     align-items: center !important;
-    background: rgb(246, 244, 241) !important;
-    border-left: 1px solid rgb(226, 222, 217) !important;
+    background: rgb(249, 250, 251) !important;
+    border-left: 1px solid rgb(228, 231, 235) !important;
   }
 
   .igv-track-drag-column > .igv-track-drag-handle {
@@ -255,7 +263,7 @@ const TRACK_REORDER_CSS = `
     height: 4px;
     transform: translate(-6px, -50%);
     border-radius: 50%;
-    color: rgb(116, 121, 125);
+    color: rgb(123, 133, 145);
     background: currentColor;
     box-shadow: 0 -8px 0 currentColor, 0 8px 0 currentColor,
       8px -8px 0 currentColor, 8px 0 0 currentColor, 8px 8px 0 currentColor;
@@ -265,8 +273,8 @@ const TRACK_REORDER_CSS = `
 
   .igv-track-drag-column > .igv-track-drag-handle:hover,
   .igv-track-drag-column > .igv-track-drag-handle.igv-track-drag-handle-hover-color {
-    background: rgb(229, 231, 232) !important;
-    box-shadow: inset 0 0 0 1px rgb(195, 199, 201) !important;
+    background: rgb(241, 243, 245) !important;
+    box-shadow: inset 0 0 0 1px rgb(208, 213, 220) !important;
   }
 
   .igv-track-drag-column > .igv-track-drag-handle:hover::before,
@@ -277,13 +285,13 @@ const TRACK_REORDER_CSS = `
 
   .igv-track-drag-column > .igv-track-drag-handle:active {
     cursor: grabbing !important;
-    background: rgb(211, 216, 219) !important;
-    box-shadow: inset 0 0 0 2px rgb(108, 121, 130) !important;
+    background: rgb(223, 231, 252) !important;
+    box-shadow: inset 0 0 0 2px rgb(62, 99, 221) !important;
   }
 
   .igv-track-drag-column > .igv-track-drag-handle.igv-track-drag-handle-selected-color {
-    background: rgb(221, 225, 227) !important;
-    box-shadow: inset 0 0 0 1px rgb(134, 145, 152) !important;
+    background: rgb(237, 242, 254) !important;
+    box-shadow: inset 0 0 0 1px rgb(62, 99, 221) !important;
   }
 
   .igv-track-drag-column > .igv-track-drag-shim {
@@ -296,6 +304,43 @@ const TRACK_REORDER_CSS = `
   .igv-container.genome-canvas-highlight-mode .igv-viewport {
     cursor: crosshair !important;
   }
+
+  .igv-container.genome-canvas-dark { color: rgb(216, 222, 233); }
+  .igv-container.genome-canvas-dark .igv-track-label {
+    border-color: rgb(76, 86, 106) !important;
+    background-color: rgba(46, 52, 64, 0.88) !important;
+    color: rgb(229, 233, 240) !important;
+  }
+  .igv-container.genome-canvas-dark .igv-track-label:hover { background-color: rgb(59, 66, 82) !important; }
+  .igv-container.genome-canvas-dark .igv-track-drag-column {
+    background: rgb(42, 48, 59) !important;
+    border-left-color: rgb(59, 66, 82) !important;
+  }
+  .igv-container.genome-canvas-dark .igv-track-drag-column > .igv-track-drag-handle::before { color: rgb(136, 146, 163); }
+  .igv-container.genome-canvas-dark .igv-gear-menu-column > div { background: transparent !important; }
+  .igv-container.genome-canvas-dark .igv-gear-menu-column svg { opacity: 0; }
+  .igv-container.genome-canvas-dark .igv-track-drag-column > .igv-track-drag-handle:hover,
+  .igv-container.genome-canvas-dark .igv-track-drag-column > .igv-track-drag-handle.igv-track-drag-handle-hover-color {
+    background: rgb(59, 66, 82) !important;
+    box-shadow: inset 0 0 0 1px rgb(76, 86, 106) !important;
+  }
+  .igv-container.genome-canvas-dark .igv-zoom-in-notice-container,
+  .igv-container.genome-canvas-dark .igv-zoom-in-notice div { background-color: rgba(46, 52, 64, 0.9) !important; }
+  .igv-container.genome-canvas-dark .igv-zoom-in-notice-container > div,
+  .igv-container.genome-canvas-dark .igv-zoom-in-notice div { color: rgb(216, 222, 233) !important; }
+  .igv-container.genome-canvas-dark .igv-menu-popup,
+  .igv-container.genome-canvas-dark .igv-track-label-popover,
+  .igv-container.genome-canvas-dark .igv-track-label-popover__body {
+    border-color: rgb(76, 86, 106) !important;
+    background: rgb(59, 66, 82) !important;
+    color: rgb(236, 239, 244) !important;
+  }
+  .igv-container.genome-canvas-dark .igv-menu-popup-header,
+  .igv-container.genome-canvas-dark .igv-track-label-popover__header {
+    border-bottom-color: rgb(76, 86, 106) !important;
+    background-color: rgb(67, 76, 94) !important;
+  }
+  .igv-container.genome-canvas-dark .igv-menu-popup-shim:hover { background-color: rgb(76, 86, 106) !important; }
 `;
 
 function installTrackReorderUI() {
@@ -560,6 +605,17 @@ function installHighlightUI() {
   scheduleHighlightRender();
 }
 
+// The canvas palette follows the page theme; DARK_CANVAS.background matches
+// --canvas in styles.css.
+function syncCanvasTheme() {
+  const dark = document.documentElement.dataset.theme === "dark";
+  setCanvasTheme(dark ? DARK_CANVAS : LIGHT_CANVAS);
+  const root = state.browser?.root;
+  if (!root) return;
+  root.classList.toggle("genome-canvas-dark", dark);
+  for (const view of state.browser.trackViews || []) view.repaintViews?.();
+}
+
 function setStatus(message, mode = "ready") {
   ui.statusText.textContent = message;
   ui.statusDot.className = `status-dot ${mode === "busy" ? "" : mode}`.trim();
@@ -727,14 +783,20 @@ function isHicConfig(config) {
   return typeof config?.url === "string" && /\.hic(?:[?#]|$)/i.test(config.url);
 }
 
+function requiresCustomRenderer(config) {
+  return isHicConfig(config) || config?.type === "gwas" || config?.format === "gwas"
+    || /\.gwas(?:\.(?:gz|bgz))?(?:[?#]|$)/i.test(String(config?.url || ""));
+}
+
 async function loadConfiguredTrack(config) {
   const decorated = decorateTrack(normalizeTrackURLs(config));
-  if (isHicConfig(decorated)) {
+  if (requiresCustomRenderer(decorated)) {
     const track = await state.browser.createTrack(decorated);
-    if (!track) throw new Error("IGV could not create the Hi-C track");
-    installHicHeatmapRenderer(track);
-    await state.browser.addTrack(track);
+    if (!track) throw new Error("IGV could not create the track");
+    // Install the LD loader before the first feature request, not after the
+    // viewport cache has already been populated by loadTrack().
     applyTrackVisualStyle(track, false);
+    await state.browser.addTrack(track);
     state.browser.reorderTracks?.();
     await state.browser.layoutChange?.();
     return track;
@@ -791,7 +853,7 @@ function syncTracks() {
     if (!views.length) {
       const empty = document.createElement("div");
       empty.className = "track-empty";
-      empty.innerHTML = '<span aria-hidden="true">≋</span><p>Tracks loaded from server files or public URLs appear here.</p>';
+      empty.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg><p>Tracks loaded from server files or public URLs appear here.</p>';
       ui.trackList.append(empty);
       notifyDesktopHost();
       return;
@@ -834,6 +896,11 @@ function syncTracks() {
 }
 
 function updateLocus(referenceFrames) {
+  // Without an event payload, read IGV's frames rather than currentLoci(),
+  // which returns unformatted fractional coordinates.
+  if (!Array.isArray(referenceFrames) && Array.isArray(state.browser?.referenceFrameList)) {
+    referenceFrames = state.browser.referenceFrameList;
+  }
   let loci = [];
   if (Array.isArray(referenceFrames)) {
     loci = referenceFrames.map((frame) => typeof frame.getLocusString === "function" ? frame.getLocusString() : frame.label).filter(Boolean);
@@ -1061,6 +1128,11 @@ function bindWorkspaceEvents() {
 
 async function initializeApplication() {
   bindWorkspaceEvents();
+  // The workspace cookie is HttpOnly, so request the configuration alongside
+  // the catalog instead of waiting a round trip; it is discarded (409) when no
+  // workspace has been selected yet.
+  const configRequest = fetchJSON(appURL("api/config"));
+  configRequest.catch(() => {});
   const payload = await loadWorkspaceCatalog();
   if (!payload.selected) {
     state.workspace = null;
@@ -1073,12 +1145,12 @@ async function initializeApplication() {
   document.body.classList.add("workspace-active");
   bindEvents();
   state.eventsBound = true;
-  await initializeBrowser();
+  await initializeBrowser(configRequest);
 }
 
-async function initializeBrowser() {
+async function initializeBrowser(configRequest) {
   setStatus("Reading local configuration...", "busy");
-  state.config = await fetchJSON(appURL("api/config"));
+  state.config = await (configRequest || fetchJSON(appURL("api/config"))).catch(() => fetchJSON(appURL("api/config")));
   state.authenticatedUser = state.config.workspaceId || state.config.user || "workspace";
   $("#profile-list-owner").textContent = `SAVED FOR ${(state.config.user || "WORKSPACE").toLocaleUpperCase()}`;
   ui.appName.textContent = state.config.appName || "Genome Canvas";
@@ -1122,11 +1194,15 @@ async function initializeBrowser() {
   delete browserConfig.genomeCanvasHighlights;
   delete browserConfig.genomeCanvasCenterGuide;
   delete browserConfig.genomeCanvasHighlightColor;
-  const deferredHicTracks = (browserConfig.tracks || []).filter(isHicConfig);
-  if (deferredHicTracks.length) {
-    browserConfig.tracks = browserConfig.tracks.filter((track) => !isHicConfig(track));
+  const deferredTracks = (browserConfig.tracks || []).filter(requiresCustomRenderer);
+  if (deferredTracks.length) {
+    browserConfig.tracks = browserConfig.tracks.filter((track) => !requiresCustomRenderer(track));
   }
   Object.assign(browserConfig, {
+    ...(state.config.genomeList?.length ? {
+      loadDefaultGenomes: false,
+      genomeList: normalizeReferenceResources(state.config.genomeList, state.config, appBaseURL),
+    } : {}),
     showNavigation: false,
     showIdeogram: true,
     showRuler: true,
@@ -1143,8 +1219,9 @@ async function initializeBrowser() {
   if (!window.igv?.createBrowser) throw new Error("IGV.js browser engine did not load");
   state.browser = await window.igv.createBrowser(ui.viewer, browserConfig);
   installTrackReorderUI();
+  syncCanvasTheme();
   await state.browser.layoutChange?.();
-  for (const trackConfig of deferredHicTracks) await loadConfiguredTrack(trackConfig);
+  for (const trackConfig of deferredTracks) await loadConfiguredTrack(trackConfig);
   state.highlights = restoredHighlights;
   state.centerGuide = restoredCenterGuide;
   state.browser.doShowCenterLine = restoredCenterGuide;
@@ -1178,6 +1255,8 @@ async function fetchJSON(url, options) {
 }
 
 const FILE_LOCATION_HISTORY_PREFIX = "genome-canvas:last-server-location:";
+const RAIL_COLLAPSED_KEY = "genome-canvas:rail-collapsed";
+const THEME_KEY = "genome-canvas:theme";
 
 function fileLocationHistoryKey() {
   return `${FILE_LOCATION_HISTORY_PREFIX}${state.authenticatedUser || "genome"}`;
@@ -1654,7 +1733,7 @@ function visibleHubTracks() {
 function updateHubLoadButton() {
   const count = state.selectedHubTracks.size;
   ui.loadHubTracks.disabled = count === 0;
-  ui.loadHubTracks.textContent = count ? `Load ${count.toLocaleString()} Selected` : "Load Selected Tracks";
+  ui.loadHubTracks.textContent = count ? `Load ${count.toLocaleString()} selected` : "Load selected tracks";
 }
 
 function renderHubTrackRows() {
@@ -1959,8 +2038,8 @@ async function applyProfileState(profileState, profileName = "Favorite profile")
   delete browserConfig.genomeCanvasHighlights;
   delete browserConfig.genomeCanvasCenterGuide;
   delete browserConfig.genomeCanvasHighlightColor;
-  const deferredHicTracks = (browserConfig.tracks || []).filter(isHicConfig);
-  if (deferredHicTracks.length) browserConfig.tracks = browserConfig.tracks.filter((track) => !isHicConfig(track));
+  const deferredTracks = (browserConfig.tracks || []).filter(requiresCustomRenderer);
+  if (deferredTracks.length) browserConfig.tracks = browserConfig.tracks.filter((track) => !requiresCustomRenderer(track));
   Object.assign(browserConfig, {
     showNavigation: false,
     showIdeogram: true,
@@ -1979,7 +2058,7 @@ async function applyProfileState(profileState, profileName = "Favorite profile")
   await state.browser.loadSessionObject(browserConfig);
   installTrackReorderUI();
   await state.browser.layoutChange?.();
-  for (const trackConfig of deferredHicTracks) await loadConfiguredTrack(trackConfig);
+  for (const trackConfig of deferredTracks) await loadConfiguredTrack(trackConfig);
   state.highlights = restoredHighlights;
   state.highlightDraft = null;
   state.centerGuide = restoredCenterGuide;
@@ -2078,7 +2157,14 @@ async function exportPNG() {
   if (!state.browser) return;
   setStatus("Generating PNG...", "busy");
   try {
-    const svgText = await state.browser.toSVG();
+    // Exported figures always use the light (publication) canvas palette.
+    let svgText;
+    setCanvasTheme(LIGHT_CANVAS);
+    try {
+      svgText = await state.browser.toSVG();
+    } finally {
+      syncCanvasTheme();
+    }
     const parsed = new DOMParser().parseFromString(svgText, "image/svg+xml");
     const svg = parsed.documentElement;
     const viewBox = (svg.getAttribute("viewBox") || "").split(/\s+/).map(Number);
@@ -2359,12 +2445,73 @@ function bindEvents() {
   });
   ui.clearHighlights.addEventListener("click", clearHighlights);
 
-  const setRail = (open) => ui.workspace.classList.toggle("rail-open", open);
-  $("#rail-toggle").addEventListener("click", () => setRail(true));
+  // Wide layouts collapse the rail in place (remembered per browser); compact
+  // layouts slide it over the canvas.
+  const compactLayout = window.matchMedia("(max-width: 900px)");
+  const railToggle = $("#rail-toggle");
+  const railIsOpen = () => (compactLayout.matches
+    ? ui.workspace.classList.contains("rail-open")
+    : !ui.workspace.classList.contains("rail-collapsed"));
+  const updateRailToggle = () => railToggle.setAttribute("aria-expanded", String(railIsOpen()));
+  const setRail = (open) => {
+    if (compactLayout.matches) {
+      ui.workspace.classList.toggle("rail-open", open);
+    } else {
+      ui.workspace.classList.toggle("rail-collapsed", !open);
+      try { window.localStorage.setItem(RAIL_COLLAPSED_KEY, open ? "0" : "1"); } catch { /* storage disabled */ }
+      // IGV.js sizes its viewports from a window resize listener.
+      window.dispatchEvent(new Event("resize"));
+    }
+    updateRailToggle();
+  };
+  try {
+    ui.workspace.classList.toggle("rail-collapsed", window.localStorage.getItem(RAIL_COLLAPSED_KEY) === "1");
+  } catch { /* storage disabled */ }
+  compactLayout.addEventListener?.("change", () => {
+    ui.workspace.classList.remove("rail-open");
+    updateRailToggle();
+  });
+  updateRailToggle();
+  railToggle.addEventListener("click", () => setRail(!railIsOpen()));
   $("#close-rail").addEventListener("click", () => setRail(false));
+
+  // Theme: follow the operating system until the user picks one. Picking the
+  // theme the system already uses clears the override again.
+  const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
+  const themeToggle = $("#theme-toggle");
+  const applyTheme = (theme) => {
+    document.documentElement.dataset.theme = theme;
+    syncCanvasTheme();
+    const next = theme === "dark" ? "light" : "dark";
+    themeToggle.title = `Switch to ${next} theme`;
+    themeToggle.setAttribute("aria-label", themeToggle.title);
+    $('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#2e3440" : "#f8f9fb");
+  };
+  const savedTheme = () => {
+    try { return window.localStorage.getItem(THEME_KEY); } catch { return null; }
+  };
+  applyTheme(savedTheme() || (systemDark.matches ? "dark" : "light"));
+  systemDark.addEventListener?.("change", (event) => {
+    if (!savedTheme()) applyTheme(event.matches ? "dark" : "light");
+  });
+  themeToggle.addEventListener("click", () => {
+    const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    try {
+      if (theme === (systemDark.matches ? "dark" : "light")) window.localStorage.removeItem(THEME_KEY);
+      else window.localStorage.setItem(THEME_KEY, theme);
+    } catch { /* storage disabled */ }
+    applyTheme(theme);
+  });
+
   $("#rail-scrim").addEventListener("click", () => setRail(false));
 
   document.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k" && !$("dialog[open]")) {
+      event.preventDefault();
+      ui.locus.focus();
+      ui.locus.select();
+      return;
+    }
     if ($("dialog[open]") || /input|select|textarea/i.test(document.activeElement?.tagName)) return;
     if (event.key === "/") {
       event.preventDefault();

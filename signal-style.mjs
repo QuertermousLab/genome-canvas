@@ -1,3 +1,5 @@
+import { canvasTheme } from "./canvas-theme.mjs?v=20261007.2";
+
 function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
 }
@@ -126,7 +128,7 @@ function paintGuideLines(track, options, yScale) {
     context.beginPath();
     context.moveTo(0, yScale(line.y));
     context.lineTo(options.pixelWidth, yScale(line.y));
-    context.strokeStyle = line.color || "rgb(205, 214, 211)";
+    context.strokeStyle = line.color || canvasTheme().guide;
     context.lineWidth = 1;
     context.setLineDash?.(line.dotted ? [4, 5] : []);
     context.stroke();
@@ -161,7 +163,7 @@ function drawGradientSignal(track, options) {
     context.beginPath();
     context.moveTo(0, baseline);
     context.lineTo(options.pixelWidth, baseline);
-    context.strokeStyle = track.baselineColor || "rgb(205, 214, 211)";
+    context.strokeStyle = track.baselineColor || canvasTheme().guide;
     context.lineWidth = 1;
     context.stroke();
     context.restore();

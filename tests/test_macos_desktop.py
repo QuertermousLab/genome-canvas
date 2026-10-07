@@ -19,7 +19,7 @@ class MacOSDesktopClientTests(unittest.TestCase):
 
     def test_client_uses_persistent_webkit_and_native_file_panels(self):
         source = (MAC_APP / "Sources" / "main.m").read_text(encoding="utf-8")
-        self.assertIn("http://127.0.0.1:8000/", source)
+        self.assertIn("http://171.65.68.140:8892/genome-canvas/", source)
         self.assertIn("[WKWebsiteDataStore defaultDataStore]", source)
         self.assertIn("WKDownloadDelegate", source)
         self.assertIn("[NSSavePanel savePanel]", source)

@@ -1,5 +1,6 @@
 import http.client
 import hashlib
+import gzip
 import json
 import tempfile
 import threading
@@ -7,6 +8,7 @@ import unittest
 from pathlib import Path
 
 import server
+from resource_cache import ReferenceCache
 from workspace_store import WorkspaceStore
 
 
@@ -123,6 +125,92 @@ class GenomeCanvasServerTests(unittest.TestCase):
         self.assertEqual(headers["Content-Range"], "bytes 5-9/19")
         self.assertEqual(body, b"10\t20")
 
+    def test_whole_text_track_is_gzip_encoded_but_ranges_are_not(self):
+        large = self.root / "contacts.bedpe"
+        content = b"".join(b"chr1\t%d\t%d\tchr1\t%d\t%d\t0.5\n" % (i, i + 10, i + 500, i + 510) for i in range(400))
+        large.write_bytes(content)
+        status, headers, body = self.request("GET", "/data/test/contacts.bedpe", headers={"Accept-Encoding": "gzip"})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Encoding"], "gzip")
+        self.assertEqual(headers["Vary"], "Accept-Encoding")
+        self.assertEqual(gzip.decompress(body), content)
+        self.assertLess(len(body), len(content))
+        status, _, body = self.request("GET", "/data/test/contacts.bedpe", headers={
+            "Accept-Encoding": "gzip", "If-None-Match": headers["ETag"],
+        })
+        self.assertEqual(status, 304)
+        status, headers, body = self.request("GET", "/data/test/contacts.bedpe", headers={
+            "Accept-Encoding": "gzip", "Range": "bytes=0-9",
+        })
+        self.assertEqual(status, 206)
+        self.assertNotIn("Content-Encoding", headers)
+        self.assertEqual(body, content[:10])
+        status, headers, body = self.request("GET", "/data/test/contacts.bedpe")
+        self.assertNotIn("Content-Encoding", headers)
+        self.assertEqual(body, content)
+        # Already-compressed binary formats are never re-encoded.
+        status, headers, _ = self.request("GET", "/data/test/variants.vcf.gz", headers={"Accept-Encoding": "gzip"})
+        self.assertEqual(status, 200)
+        self.assertNotIn("Content-Encoding", headers)
+
+    def test_bundled_fonts_are_served_immutable_and_confined(self):
+        status, headers, body = self.request("GET", "/vendor/fonts/manrope-latin-wght-normal.woff2", headers={"Cookie": ""})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "font/woff2")
+        self.assertIn("immutable", headers["Cache-Control"])
+        self.assertEqual(body[:4], b"wOF2")
+        for path in ("/vendor/fonts/missing.woff2", "/vendor/fonts/..%2F..%2Fserver.py", "/vendor/fonts/manrope.LICENSE"):
+            status, _, _ = self.request("GET", path)
+            self.assertEqual(status, 404, path)
+
+    def test_large_json_responses_are_gzip_encoded(self):
+        for index in range(60):
+            (self.root / "track-{:03d}.bed".format(index)).write_bytes(b"chr1\t1\t2\n")
+        status, headers, body = self.request("GET", "/api/files?root=test&path=", headers={"Accept-Encoding": "gzip"})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Encoding"], "gzip")
+        names = [item["name"] for item in json.loads(gzip.decompress(body))["entries"]]
+        self.assertIn("track-059.bed", names)
+        status, headers, body = self.request("GET", "/api/health", headers={"Accept-Encoding": "gzip"})
+        self.assertNotIn("Content-Encoding", headers)
+        self.assertTrue(json.loads(body)["ok"])
+
+    def test_static_compression_and_conditional_requests(self):
+        status, headers, body = self.request("GET", "/app.js?v=test", headers={"Accept-Encoding": "gzip"})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Encoding"], "gzip")
+        self.assertEqual(gzip.decompress(body), (server.APP_DIR / "app.js").read_bytes())
+        self.assertIn("immutable", headers["Cache-Control"])
+        status, _, body = self.request("GET", "/app.js?v=test", headers={
+            "Accept-Encoding": "gzip", "If-None-Match": headers["ETag"],
+        })
+        self.assertEqual(status, 304)
+        self.assertEqual(body, b"")
+        status, headers, body = self.request("GET", "/app.js", headers={"Accept-Encoding": "gzip;q=0"})
+        self.assertNotIn("Content-Encoding", headers)
+        self.assertEqual(headers["Cache-Control"], "no-cache")
+
+    def test_cached_reference_range_does_not_require_workspace(self):
+        reference_root = self.root / "references"
+        reference_root.mkdir()
+        (reference_root / "sequence.2bit").write_bytes(b"0123456789")
+        (reference_root / "manifest.json").write_text(json.dumps({
+            "assets": {"sequence.2bit": {"file": "sequence.2bit"}},
+        }))
+        previous_cache = server.REFERENCE_CACHE
+        try:
+            server.REFERENCE_CACHE = ReferenceCache(reference_root)
+            status, headers, body = self.request("GET", "/reference/sequence.2bit", headers={
+                "Range": "bytes=3-6", "Cookie": "",
+            })
+            self.assertEqual(status, 206)
+            self.assertEqual(headers["Content-Range"], "bytes 3-6/10")
+            self.assertEqual(body, b"3456")
+            status, _, _ = self.request("GET", "/reference/../workspaces.sqlite3", headers={"Cookie": ""})
+            self.assertEqual(status, 404)
+        finally:
+            server.REFERENCE_CACHE = previous_cache
+
     def test_workspace_scoped_data_range_does_not_require_cookie(self):
         path = "/data/{}/test/sample.bed".format(self.alice_workspace_id)
         status, headers, body = self.request(
@@ -178,17 +266,6 @@ class GenomeCanvasServerTests(unittest.TestCase):
         self.assertEqual(track["type"], "interact")
 
     def test_indexed_gwas_is_configured_as_regional_manhattan_track(self):
-        previous_ld_settings = server.SETTINGS.get("ldReferenceHg19")
-        server.SETTINGS["ldReferenceHg19"] = {
-            "label": "Test LD panel",
-            "maxWindow": 1000000,
-            "vcfTemplate": "/reference/chr{chrom}.vcf.gz",
-        }
-        self.addCleanup(
-            lambda: server.SETTINGS.__setitem__("ldReferenceHg19", previous_ld_settings)
-            if previous_ld_settings is not None
-            else server.SETTINGS.pop("ldReferenceHg19", None)
-        )
         status, _, body = self.request("GET", "/api/files?root=test&path=")
         self.assertEqual(status, 200)
         gwas = next(item for item in json.loads(body)["entries"] if item["name"] == "study.hg38.gwas.gz")
@@ -479,7 +556,7 @@ subGroups biosample=Heart assay=RNA_seq
             server.resolve_data_path("test", "../outside.bam")
 
     def test_filesystem_root_contains_absolute_paths(self):
-        self.assertTrue(server.within_root(Path("/home/alice"), Path("/")))
+        self.assertTrue(server.within_root(Path("/home/quanyiz"), Path("/")))
 
     def test_display_path_with_leading_slash_is_root_relative(self):
         self.assertEqual(server.resolve_data_path("test", "/sample.bed"), self.sample)

@@ -11,7 +11,7 @@ launch Safari or duplicate the genome-browser backend.
 - macOS 13 or later
 - Apple Silicon or Intel Mac
 - Xcode Command Line Tools (`xcode-select --install`)
-- Network access to your Genome Canvas server
+- Network access to `171.65.68.140:8892`
 
 ## Build
 
@@ -41,8 +41,7 @@ selects its bundled compiler automatically.
 
 ## Behavior
 
-- The default server is `http://127.0.0.1:8000/`. Use **Genome Canvas →
-  Server Address…** to enter a LAN server or reverse-proxy URL.
+- The default server is `http://171.65.68.140:8892/genome-canvas/`.
 - Change the saved server from **Genome Canvas → Server Address…**. There is no
   browser-style address bar in the main window.
 - Cookies use WebKit's persistent data store, so the selected workspace remains

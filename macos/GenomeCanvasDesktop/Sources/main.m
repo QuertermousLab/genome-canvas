@@ -3,7 +3,7 @@
 #include <math.h>
 #include <stdio.h>
 
-static NSString * const GCDefaultServerAddress = @"http://127.0.0.1:8000/";
+static NSString * const GCDefaultServerAddress = @"http://171.65.68.140:8892/genome-canvas/";
 static NSString * const GCServerDefaultsKey = @"GenomeCanvasServerAddress";
 static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desktop.track-row";
 
@@ -459,7 +459,7 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
     NSURLComponents *components = [NSURLComponents componentsWithString:candidate];
     NSString *scheme = components.scheme.lowercaseString;
     if (!components.host.length || !([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"])) return nil;
-    if (!components.path.length) components.path = @"/";
+    if (!components.path.length || [components.path isEqualToString:@"/"]) components.path = @"/genome-canvas/";
     else if (![components.path hasSuffix:@"/"]) components.path = [components.path stringByAppendingString:@"/"];
     NSMutableArray<NSURLQueryItem *> *items = [NSMutableArray array];
     for (NSURLQueryItem *item in components.queryItems ?: @[]) {

@@ -2,12 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY index.html styles.css app.js server.py workspace_store.py ./
-COPY annotation-style.mjs hic-heatmap.mjs highlights.mjs manhattan-style.mjs public-hubs.mjs signal-style.mjs track-colors.mjs ./
+COPY index.html styles.css app.js *.mjs server.py workspace_store.py resource_cache.py genomecanvas.config.example.json ./
 COPY public ./public
 COPY vendor ./vendor
 
-RUN mkdir -p /data /app/data /app/.genomecanvas/sessions /app/.genomecanvas/profiles
+RUN mkdir -p /data /app/.genomecanvas/sessions
 
 ENV GENOME_DATA_ROOTS=/data \
     GENOME_CANVAS_HOST=0.0.0.0 \
