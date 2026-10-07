@@ -1271,7 +1271,10 @@ typedef NS_ENUM(NSInteger, GCButtonStyle) {
     NSURLComponents *components = [NSURLComponents componentsWithString:candidate];
     NSString *scheme = components.scheme.lowercaseString;
     if (!components.host.length || !([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"])) return nil;
-    if (!components.path.length || [components.path isEqualToString:@"/"]) components.path = @"/genome-canvas/";
+    // A bare LAN server address defaults to the gateway path; the bundled
+    // loopback backend serves the app at its root.
+    BOOL loopback = [@[@"127.0.0.1", @"localhost", @"::1"] containsObject:components.host.lowercaseString];
+    if (!components.path.length || [components.path isEqualToString:@"/"]) components.path = loopback ? @"/" : @"/genome-canvas/";
     else if (![components.path hasSuffix:@"/"]) components.path = [components.path stringByAppendingString:@"/"];
     NSMutableArray<NSURLQueryItem *> *items = [NSMutableArray array];
     for (NSURLQueryItem *item in components.queryItems ?: @[]) {

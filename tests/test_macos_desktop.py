@@ -58,6 +58,11 @@ class MacOSDesktopClientTests(unittest.TestCase):
         self.assertIn('setObject:self.serverAddress forKey:GCServerDefaultsKey', source)
         self.assertIn("Boolean(state.config?.localMode)", web_app)
 
+    def test_local_backend_url_is_not_rewritten_to_the_gateway_path(self):
+        source = (MAC_APP / "Sources" / "main.m").read_text(encoding="utf-8")
+        self.assertIn('@"http://127.0.0.1:%ld/?local=1"', source)
+        self.assertIn('components.path = loopback ? @"/" : @"/genome-canvas/"', source)
+
     def test_client_follows_nord_themes_with_manual_override(self):
         source = (MAC_APP / "Sources" / "main.m").read_text(encoding="utf-8")
         web_app = (ROOT / "app.js").read_text(encoding="utf-8")
