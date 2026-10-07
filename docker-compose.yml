@@ -4,10 +4,11 @@ services:
     container_name: genome-canvas
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${GENOME_CANVAS_PORT:-8000}:8000"
     environment:
       GENOME_DATA_ROOTS: /data
       GENOME_CANVAS_PORT: 8000
     volumes:
-      - ./data:/data:ro
+      - "${GENOME_DATA_DIR:-./data}:/data:ro"
+      - ./genomecanvas.config.json:/app/genomecanvas.config.json:ro
       - ./.genomecanvas:/app/.genomecanvas

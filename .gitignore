@@ -38,6 +38,13 @@ yarn-error.log*
 /.wrangler/
 /outputs/
 /work/
+__pycache__/
+*.py[cod]
+*.sqlite3*
+*.log
+*.pid
+*.zip
+/macos/GenomeCanvasDesktop/dist/
 
 # Genome Canvas local state and data
 /.genomecanvas/

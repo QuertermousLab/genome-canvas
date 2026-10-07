@@ -6,7 +6,7 @@ COPY index.html styles.css app.js *.mjs server.py workspace_store.py resource_ca
 COPY public ./public
 COPY vendor ./vendor
 
-RUN mkdir -p /data /app/.genomecanvas/sessions
+RUN mkdir -p /data /app/data /app/.genomecanvas/sessions /app/.genomecanvas/profiles
 
 ENV GENOME_DATA_ROOTS=/data \
     GENOME_CANVAS_HOST=0.0.0.0 \
