@@ -1,77 +1,286 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-unit="${GENOME_CANVAS_SYSTEMD_UNIT:-genome-canvas.service}"
-health_url="${GENOME_CANVAS_HEALTH_URL:-http://127.0.0.1:8000/api/health}"
-public_url="${GENOME_CANVAS_PUBLIC_URL:-http://127.0.0.1:8000/}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+backend_unit="genome-canvas.service"
+gateway_unit="genome-canvas-gateway.service"
+backend_health_url="${GENOME_CANVAS_BACKEND_URL:-http://127.0.0.1:8000/api/health}"
+gateway_health_url="${GENOME_CANVAS_GATEWAY_URL:-http://127.0.0.1:8892/genome-canvas/api/health}"
+public_url="${GENOME_CANVAS_PUBLIC_URL:-http://171.65.68.140:8892/genome-canvas/}"
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
-  green=$'\033[32m'; yellow=$'\033[33m'; red=$'\033[31m'; bold=$'\033[1m'; reset=$'\033[0m'
+  green=$'\033[32m'
+  yellow=$'\033[33m'
+  red=$'\033[31m'
+  bold=$'\033[1m'
+  reset=$'\033[0m'
 else
-  green=""; yellow=""; red=""; bold=""; reset=""
+  green=""
+  yellow=""
+  red=""
+  bold=""
+  reset=""
 fi
 
 usage() {
-  printf '%s\n' \
-    "Genome Canvas service manager" \
-    "" \
-    "Usage: ./genome-canvasctl {start|stop|restart|status|monitor|logs|enable|disable}" \
-    "" \
-    "Environment: GENOME_CANVAS_SYSTEMD_UNIT, GENOME_CANVAS_HEALTH_URL," \
-    "             GENOME_CANVAS_PUBLIC_URL, NO_COLOR"
+  cat <<'EOF'
+Genome Canvas service manager
+
+Usage:
+  ./genome-canvasctl start
+  ./genome-canvasctl stop
+  ./genome-canvasctl restart
+  ./genome-canvasctl status
+  ./genome-canvasctl monitor [seconds]
+  ./genome-canvasctl logs [backend|gateway|all]
+  ./genome-canvasctl access
+  ./genome-canvasctl enable
+  ./genome-canvasctl disable
+  ./genome-canvasctl gateway-stop
+
+Commands:
+  start         Start Genome Canvas and ensure the port-8892 gateway is running.
+  stop          Stop Genome Canvas only; keep the shared Jupyter gateway running.
+  restart       Restart Genome Canvas and verify both health endpoints.
+  status        Show services, health checks, process IDs, and the public URL.
+  monitor       Refresh the status dashboard continuously; default interval is 5s.
+  logs          Follow systemd logs. The default target is backend.
+  access        Follow the Apache access and error logs for port 8892.
+  enable        Enable both units at login and start them now.
+  disable       Disable Genome Canvas autostart; does not stop or disable Jupyter.
+  gateway-stop  Stop the shared 8892 gateway. This also interrupts Jupyter access.
+
+Environment overrides:
+  GENOME_CANVAS_PUBLIC_URL
+  GENOME_CANVAS_BACKEND_URL
+  GENOME_CANVAS_GATEWAY_URL
+  NO_COLOR=1
+EOF
 }
 
-fail() { printf '%sERROR%s: %s\n' "$red" "$reset" "$*" >&2; exit 1; }
-require_systemd() { command -v systemctl >/dev/null 2>&1 || fail "systemctl is not installed"; }
+fail() {
+  printf '%sERROR%s: %s\n' "$red" "$reset" "$*" >&2
+  exit 1
+}
 
-probe() {
-  local result code seconds
-  if result="$(curl --silent --show-error --output /dev/null --max-time 4 --write-out '%{http_code} %{time_total}' "$health_url" 2>/dev/null)"; then
+require_user_systemd() {
+  command -v systemctl >/dev/null 2>&1 || fail "systemctl is not installed"
+  if ! systemctl --user show-environment >/dev/null 2>&1; then
+    fail "the user systemd manager is unavailable; run this as the deployment user in a normal login session"
+  fi
+}
+
+install_unit_links() {
+  local unit source
+  for unit in "$backend_unit" "$gateway_unit"; do
+    source="$script_dir/deploy/$unit"
+    [[ -f "$source" ]] || fail "missing unit file: $source"
+    if ! systemctl --user cat "$unit" >/dev/null 2>&1; then
+      systemctl --user link "$source" >/dev/null || fail "could not link $unit"
+    fi
+  done
+  systemctl --user daemon-reload || fail "systemd daemon-reload failed"
+}
+
+unit_value() {
+  systemctl --user show "$1" --property="$2" --value 2>/dev/null || true
+}
+
+unit_enabled() {
+  local value
+  value="$(systemctl --user is-enabled "$1" 2>/dev/null || true)"
+  printf '%s' "${value:-not-found}"
+}
+
+print_unit() {
+  local label="$1" unit="$2" state enabled pid since color
+  state="$(unit_value "$unit" ActiveState)"
+  enabled="$(unit_enabled "$unit")"
+  pid="$(unit_value "$unit" MainPID)"
+  since="$(unit_value "$unit" ActiveEnterTimestamp)"
+  color="$red"
+  [[ "$state" == "active" ]] && color="$green"
+  [[ "$state" == "activating" ]] && color="$yellow"
+  [[ -z "$state" ]] && state="not-found"
+  [[ -z "$pid" || "$pid" == "0" ]] && pid="-"
+  [[ -z "$since" ]] && since="-"
+  printf '  %-9s %s%-11s%s enabled=%-9s pid=%s\n' "$label" "$color" "$state" "$reset" "$enabled" "$pid"
+  printf '  %-9s since %s\n' "" "$since"
+}
+
+probe_url() {
+  local label="$1" url="$2" result code seconds
+  if result="$(curl --silent --show-error --output /dev/null --max-time 4 \
+      --write-out '%{http_code} %{time_total}' "$url" 2>/dev/null)"; then
     read -r code seconds <<<"$result"
     if [[ "$code" == "200" ]]; then
-      printf '  health    %sOK%s HTTP %s, %ss\n' "$green" "$reset" "$code" "$seconds"
+      printf '  %-9s %sOK%s          HTTP %s, %ss\n' "$label" "$green" "$reset" "$code" "$seconds"
       return 0
     fi
-    printf '  health    %sUNHEALTHY%s HTTP %s\n' "$yellow" "$reset" "$code"
+    printf '  %-9s %sUNHEALTHY%s   HTTP %s, %ss\n' "$label" "$yellow" "$reset" "$code" "$seconds"
     return 1
   fi
-  printf '  health    %sUNREACHABLE%s %s\n' "$red" "$reset" "$health_url"
+  printf '  %-9s %sUNREACHABLE%s %s\n' "$label" "$red" "$reset" "$url"
   return 1
 }
 
 show_status() {
-  local state enabled pid
-  require_systemd
-  state="$(systemctl show "$unit" --property=ActiveState --value 2>/dev/null || true)"
-  enabled="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
-  pid="$(systemctl show "$unit" --property=MainPID --value 2>/dev/null || true)"
-  printf '%sGenome Canvas%s\n' "$bold" "$reset"
-  printf '  service   %s (enabled=%s, pid=%s)\n' "${state:-not-found}" "${enabled:-unknown}" "${pid:-0}"
-  probe || true
-  printf '  URL       %s\n' "$public_url"
+  require_user_systemd
+  printf '%sGenome Canvas%s  %s\n' "$bold" "$reset" "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+  printf '\nServices\n'
+  print_unit "backend" "$backend_unit"
+  print_unit "gateway" "$gateway_unit"
+  printf '\nHealth\n'
+  probe_url "backend" "$backend_health_url" || true
+  probe_url "gateway" "$gateway_health_url" || true
+  printf '\nURL\n  %s\n' "$public_url"
 }
 
-monitor() {
+wait_for_health() {
+  local url="$1" label="$2" attempts="${3:-30}" count
+  for ((count = 1; count <= attempts; count += 1)); do
+    if curl --silent --fail --output /dev/null --max-time 2 "$url"; then
+      printf '%s is ready.\n' "$label"
+      return 0
+    fi
+    sleep 1
+  done
+  printf '%sWARNING%s: %s did not become healthy within %ss.\n' \
+    "$yellow" "$reset" "$label" "$attempts" >&2
+  return 1
+}
+
+start_services() {
+  require_user_systemd
+  install_unit_links
+  printf 'Starting Genome Canvas backend...\n'
+  systemctl --user start "$backend_unit" || fail "could not start $backend_unit"
+  printf 'Ensuring the shared port-8892 gateway is running...\n'
+  systemctl --user start "$gateway_unit" || fail "could not start $gateway_unit"
+  wait_for_health "$backend_health_url" "Backend" 30 || true
+  wait_for_health "$gateway_health_url" "Gateway" 15 || true
+  printf '\n'
+  show_status
+}
+
+stop_backend() {
+  require_user_systemd
+  printf 'Stopping Genome Canvas backend...\n'
+  systemctl --user stop "$backend_unit" || fail "could not stop $backend_unit"
+  printf 'Stopped. The port-8892 gateway remains active for JupyterLab.\n'
+}
+
+restart_backend() {
+  require_user_systemd
+  install_unit_links
+  printf 'Restarting Genome Canvas backend...\n'
+  systemctl --user restart "$backend_unit" || fail "could not restart $backend_unit"
+  if ! systemctl --user is-active --quiet "$gateway_unit"; then
+    printf 'Starting the shared port-8892 gateway...\n'
+    systemctl --user start "$gateway_unit" || fail "could not start $gateway_unit"
+  fi
+  wait_for_health "$backend_health_url" "Backend" 30 || true
+  wait_for_health "$gateway_health_url" "Gateway" 15 || true
+  printf '\n'
+  show_status
+}
+
+monitor_services() {
   local interval="${1:-5}"
-  [[ "$interval" =~ ^[1-9][0-9]*$ ]] || fail "interval must be a positive integer"
+  [[ "$interval" =~ ^[1-9][0-9]*$ ]] || fail "monitor interval must be a positive integer"
   while true; do
-    [[ -t 1 ]] && printf '\033[2J\033[H'
+    if [[ -t 1 ]]; then
+      printf '\033[2J\033[H'
+    fi
     show_status
     printf '\nRefreshing every %ss; press Ctrl+C to exit.\n' "$interval"
     sleep "$interval"
   done
 }
 
-require_systemd
-case "${1:-status}" in
-  start) systemctl start "$unit" ;;
-  stop) systemctl stop "$unit" ;;
-  restart) systemctl restart "$unit" ;;
-  status) show_status ;;
-  monitor) monitor "${2:-5}" ;;
-  logs) exec journalctl -u "$unit" --follow --lines=100 ;;
-  enable) systemctl enable --now "$unit" ;;
-  disable) systemctl disable --now "$unit" ;;
-  help|-h|--help) usage ;;
-  *) usage >&2; fail "unknown command: ${1:-}" ;;
+follow_logs() {
+  local target="${1:-backend}"
+  require_user_systemd
+  case "$target" in
+    backend)
+      exec journalctl --user -u "$backend_unit" --follow --lines=100
+      ;;
+    gateway)
+      exec journalctl --user -u "$gateway_unit" --follow --lines=100
+      ;;
+    all)
+      exec journalctl --user -u "$backend_unit" -u "$gateway_unit" --follow --lines=100
+      ;;
+    *)
+      fail "logs target must be backend, gateway, or all"
+      ;;
+  esac
+}
+
+follow_access_logs() {
+  local access_log="$script_dir/.genomecanvas/apache/access.log"
+  local error_log="$script_dir/.genomecanvas/apache/error.log"
+  touch "$access_log" "$error_log" 2>/dev/null || fail "could not access Apache logs"
+  exec tail -n 100 -F "$access_log" "$error_log"
+}
+
+enable_services() {
+  require_user_systemd
+  install_unit_links
+  systemctl --user enable "$backend_unit" "$gateway_unit" || fail "could not enable services"
+  start_services
+}
+
+disable_backend() {
+  require_user_systemd
+  systemctl --user disable "$backend_unit" || fail "could not disable $backend_unit"
+  printf 'Genome Canvas autostart is disabled. The running process and Jupyter gateway were not stopped.\n'
+}
+
+stop_gateway() {
+  require_user_systemd
+  printf '%sWARNING%s: stopping the gateway also interrupts JupyterLab on port 8892.\n' "$yellow" "$reset"
+  systemctl --user stop "$gateway_unit" || fail "could not stop $gateway_unit"
+  printf 'Gateway stopped. Genome Canvas backend state was not changed.\n'
+}
+
+command_name="${1:-status}"
+case "$command_name" in
+  start)
+    start_services
+    ;;
+  stop)
+    stop_backend
+    ;;
+  restart)
+    restart_backend
+    ;;
+  status)
+    show_status
+    ;;
+  monitor)
+    monitor_services "${2:-5}"
+    ;;
+  logs)
+    follow_logs "${2:-backend}"
+    ;;
+  access)
+    follow_access_logs
+    ;;
+  enable)
+    enable_services
+    ;;
+  disable)
+    disable_backend
+    ;;
+  gateway-stop)
+    stop_gateway
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    usage >&2
+    fail "unknown command: $command_name"
+    ;;
 esac

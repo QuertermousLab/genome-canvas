@@ -1,3 +1,5 @@
+import { canvasTheme, withoutCanvasAdapter } from "./canvas-theme.mjs?v=20261007.2";
+
 export const SIGNIFICANCE_P_VALUE = 5e-8;
 export const GENOME_WIDE_THRESHOLD = -Math.log10(SIGNIFICANCE_P_VALUE);
 
@@ -40,6 +42,11 @@ function numericFeatureField(feature, names) {
   return Number.isFinite(value) ? value : Number.NaN;
 }
 
+function ldMetadataField(feature, name) {
+  const value = featureField(feature, [name]);
+  return value && !/^(?:\.|na|nan|null)$/i.test(String(value).trim()) ? value : undefined;
+}
+
 export function manhattanValue(track, feature) {
   const property = track?.valueProperty || "value";
   const raw = Number(feature?.[property]);
@@ -74,9 +81,16 @@ export function normalizedManhattanRange(dataRange) {
   };
 }
 
+const LD_FIELDS = ["r2", "r_squared", "ld_r2", "ld", "correlation"];
+
+function embeddedR2(feature) {
+  const value = numericFeatureField(feature, LD_FIELDS);
+  return value >= 0 && value <= 1 ? value : Number.NaN;
+}
+
 function featureR2(feature) {
   if (Number.isFinite(feature?.genomeCanvasR2)) return feature.genomeCanvasR2;
-  return numericFeatureField(feature, ["r2", "r_squared", "ld_r2", "ld", "correlation"]);
+  return embeddedR2(feature);
 }
 
 function featureOriginalLocus(feature) {
@@ -109,11 +123,20 @@ function augmentPopup(feature, label) {
     const result = Array.isArray(originalResult) ? originalResult : [];
     const rSquared = featureR2(this);
     if (Number.isFinite(rSquared)) {
-      result.push({ name: `LD r² (${label})`, value: rSquared.toFixed(3) });
+      result.push({ name: `LD r² (${this.genomeCanvasLDLabel || label})`, value: rSquared.toFixed(3) });
     } else {
       result.push({ name: "LD r²", value: "Not available" });
     }
-    if (this.genomeCanvasIsLDReference) result.push({ name: "LD reference", value: this.genomeCanvasLDId || "Yes" });
+    const reference = ldMetadataField(this, "ld_reference") || this.genomeCanvasLDId;
+    if (reference || this.genomeCanvasIsLDReference) result.push({ name: "LD reference", value: reference || "Yes" });
+    const locus = ldMetadataField(this, "ld_reference_locus");
+    if (locus) result.push({ name: "LD reference (GRCh37)", value: locus });
+    const hg38Locus = ldMetadataField(this, "ld_reference_hg38");
+    if (hg38Locus) result.push({ name: "LD reference (GRCh38)", value: hg38Locus });
+    const ldLocus = ldMetadataField(this, "ld_locus");
+    if (ldLocus) result.push({ name: "LD locus", value: ldLocus });
+    const method = ldMetadataField(this, "ld_method");
+    if (method) result.push({ name: "LD method", value: method });
     return result;
   };
   feature.__genomeCanvasLDPopup = true;
@@ -128,11 +151,38 @@ function endpointURL(endpoint, parameters) {
 
 async function fetchLDForFeatures(track, features) {
   if (!features?.length) return features;
-  const embedded = features.some((feature) => Number.isFinite(featureR2(feature)));
+  // Only file columns identify embedded LD: previous dynamic results must not
+  // freeze the reference SNP when the viewport changes.
+  const embedded = features.some((feature) => LD_FIELDS.some((name) => featureFields(feature).has(name)));
   if (embedded) {
-    track.__genomeCanvasLDStatus = { available: true, label: track.config?.ldLabel || "embedded LD" };
-    for (const feature of features) augmentPopup(feature, track.__genomeCanvasLDStatus.label);
+    const available = features.some((feature) => Number.isFinite(embeddedR2(feature)));
+    const populations = [...new Set(features.map((feature) => ldMetadataField(feature, "ld_population")).filter(Boolean))];
+    const references = [...new Set(features.map((feature) => ldMetadataField(feature, "ld_reference")).filter(Boolean))];
+    const outsideLoci = features.some((feature) => featureFields(feature).has("ld_locus"))
+      && !features.some((feature) => ldMetadataField(feature, "ld_locus"));
+    track.__genomeCanvasLDStatus = {
+      available,
+      label: populations.join(", ") || track.config?.ldLabel || "embedded LD",
+      referenceIds: references,
+      source: "embedded",
+      reason: available ? undefined : outsideLoci ? "Outside precomputed LD loci" : "No matching variants in the precomputed LD panel",
+    };
+    for (const feature of features) {
+      delete feature.genomeCanvasR2;
+      const flag = String(featureField(feature, ["ld_is_reference"]) || "").toLowerCase();
+      feature.genomeCanvasIsLDReference = ["1", "true", "yes"].includes(flag) && Number.isFinite(embeddedR2(feature));
+      feature.genomeCanvasLDId = ldMetadataField(feature, "ld_reference");
+      feature.genomeCanvasLDLabel = ldMetadataField(feature, "ld_population") || track.__genomeCanvasLDStatus.label;
+      augmentPopup(feature, track.__genomeCanvasLDStatus.label);
+    }
     return features;
+  }
+
+  for (const feature of features) {
+    delete feature.genomeCanvasR2;
+    delete feature.genomeCanvasIsLDReference;
+    delete feature.genomeCanvasLDId;
+    delete feature.genomeCanvasLDLabel;
   }
 
   const candidates = features
@@ -193,7 +243,7 @@ async function fetchLDForFeatures(track, features) {
   for (const item of sameChromosome) {
     const matches = byPosition.get(item.locus.position) || [];
     const allelesForFeature = featureAlleles(item.feature);
-    const match = matches.find((variant) => allelesMatch(allelesForFeature, variant)) || matches[0];
+    const match = matches.find((variant) => allelesMatch(allelesForFeature, variant));
     if (match && Number.isFinite(Number(match.r2))) item.feature.genomeCanvasR2 = Number(match.r2);
     if (
       payload.reference
@@ -227,7 +277,7 @@ function drawHorizontalGuides(context, width, height, dataRange) {
   context.save();
   context.lineWidth = 1;
   context.setLineDash?.([3, 5]);
-  context.strokeStyle = "rgba(104, 112, 116, 0.16)";
+  context.strokeStyle = canvasTheme().grid;
   for (let value = Math.ceil(minimum / interval) * interval; value < maximum; value += interval) {
     const y = yFor(value);
     context.beginPath();
@@ -238,13 +288,13 @@ function drawHorizontalGuides(context, width, height, dataRange) {
 
   const y = yFor(GENOME_WIDE_THRESHOLD);
   context.setLineDash?.([7, 5]);
-  context.strokeStyle = "rgba(157, 94, 99, 0.78)";
+  context.strokeStyle = canvasTheme().threshold;
   context.beginPath();
   context.moveTo(0, y);
   context.lineTo(width, y);
   context.stroke();
   context.setLineDash?.([]);
-  context.fillStyle = "rgba(116, 72, 76, 0.95)";
+  context.fillStyle = canvasTheme().thresholdText;
   context.font = "600 10px Arial, sans-serif";
   context.textAlign = "right";
   const labelX = width >= 210 ? width - 128 : width - 7;
@@ -305,33 +355,41 @@ function drawLeadLabel(context, feature, value, width) {
   context.font = "600 11px Arial, sans-serif";
   context.textAlign = "center";
   context.lineWidth = 3;
-  context.strokeStyle = "rgba(255, 255, 255, 0.94)";
+  context.strokeStyle = canvasTheme().halo;
   context.strokeText(label, x, y);
-  context.fillStyle = "#292d30";
+  context.fillStyle = canvasTheme().labelText;
   context.fillText(label, x, y);
   context.restore();
 }
 
-function drawLDLegend(context, width, status) {
+const LD_LEGEND_WIDTH = 114;
+const LD_LEGEND_HEIGHT = 192;
+const viewportLegends = new WeakMap();
+
+function drawLDLegend(...args) {
+  return withoutCanvasAdapter(() => drawLDLegendPanel(...args));
+}
+
+function drawLDLegendPanel(context, width, status, x = width - LD_LEGEND_WIDTH - 8, y = 8) {
   if (width < 210) return;
-  const boxWidth = 114;
-  const boxHeight = 192;
-  const x = width - boxWidth - 8;
-  const y = 8;
+  const boxWidth = LD_LEGEND_WIDTH;
+  const boxHeight = LD_LEGEND_HEIGHT;
   const colors = [LD_COLORS.high, LD_COLORS.mediumHigh, LD_COLORS.medium, LD_COLORS.lowMedium, LD_COLORS.low];
   context.save();
-  context.fillStyle = "rgba(255, 255, 255, 0.93)";
-  context.strokeStyle = "rgba(49, 52, 54, 0.82)";
+  const palette = canvasTheme();
+  context.fillStyle = palette.panel;
+  context.strokeStyle = palette.panelBorder;
   context.lineWidth = 1;
   context.fillRect(x, y, boxWidth, boxHeight);
   context.strokeRect(x + 0.5, y + 0.5, boxWidth - 1, boxHeight - 1);
-  context.fillStyle = "#202427";
+  context.fillStyle = palette.panelTitle;
   context.font = "600 12px Arial, sans-serif";
   context.textAlign = "left";
   context.fillText("LD (r²)", x + 10, y + 17);
-  context.fillStyle = "#6f7477";
+  context.fillStyle = palette.panelMuted;
   context.font = "9px Arial, sans-serif";
-  context.fillText(status?.available ? "1000G Phase 3 ALL" : "LD unavailable", x + 10, y + 30);
+  const label = String(status?.label || "LD").replace("1000 Genomes", "1000G");
+  context.fillText(status?.available ? label : "LD unavailable", x + 10, y + 30, boxWidth - 20);
   const barX = x + 14;
   const barY = y + 39;
   const segmentHeight = 14;
@@ -339,15 +397,15 @@ function drawLDLegend(context, width, status) {
     context.fillStyle = color;
     context.fillRect(barX, barY + index * segmentHeight, 19, segmentHeight + 0.5);
   });
-  context.strokeStyle = "#313437";
+  context.strokeStyle = palette.panelBorder;
   context.strokeRect(barX + 0.5, barY + 0.5, 18, segmentHeight * 5 - 1);
-  context.fillStyle = "#272b2e";
+  context.fillStyle = palette.panelText;
   context.font = "11px Arial, sans-serif";
   ["1", "0.8", "0.6", "0.4", "0.2", "0"].forEach((label, index) => {
     context.fillText(label, barX + 25, barY + index * segmentHeight + 4);
   });
   drawPoint(context, x + 18, y + 126, manhattanPointStyle(1, true), "diamond", 1);
-  context.fillStyle = "#272b2e";
+  context.fillStyle = palette.panelText;
   context.font = "11px Arial, sans-serif";
   context.fillText("LD ref", x + 31, y + 130);
   drawPoint(context, x + 17, y + 148, { fill: "#777", stroke: "#555", radius: 3.5 }, "triangle-up", 1);
@@ -357,6 +415,44 @@ function drawLDLegend(context, width, status) {
   drawPoint(context, x + 17, y + 184, { fill: "#777", stroke: "#555", radius: 3.5 }, "circle", 1);
   context.fillText("no β", x + 29, y + 188);
   context.restore();
+}
+
+function updateViewportLegend(track, viewport) {
+  const element = viewport.viewportElement;
+  let legend = viewportLegends.get(viewport);
+  if (!legend) {
+    const canvas = element.ownerDocument.createElement("canvas");
+    canvas.className = "genome-canvas-ld-legend";
+    canvas.setAttribute("aria-hidden", "true");
+    Object.assign(canvas.style, {
+      position: "absolute", top: "0", right: "0", zIndex: "2", pointerEvents: "none",
+      width: `${LD_LEGEND_WIDTH + 8}px`, height: `${LD_LEGEND_HEIGHT + 8}px`,
+    });
+    const redraw = () => {
+      const width = element.clientWidth;
+      canvas.style.display = width >= 210 ? "block" : "none";
+      const ratio = element.ownerDocument.defaultView?.devicePixelRatio || 1;
+      canvas.width = Math.round((LD_LEGEND_WIDTH + 8) * ratio);
+      canvas.height = Math.round((LD_LEGEND_HEIGHT + 8) * ratio);
+      const context = canvas.getContext("2d");
+      context.scale(ratio, ratio);
+      drawLDLegend(context, width, track.__genomeCanvasLDStatus, 0);
+    };
+    const Observer = element.ownerDocument.defaultView?.ResizeObserver;
+    const observer = Observer ? new Observer(redraw) : undefined;
+    observer?.observe(element);
+    legend = { canvas, redraw, observer };
+    viewportLegends.set(viewport, legend);
+    element.appendChild(canvas);
+    const originalDispose = viewport.dispose;
+    viewport.dispose = function dispose(...args) {
+      observer?.disconnect();
+      canvas.remove();
+      viewportLegends.delete(this);
+      return originalDispose?.apply(this, args);
+    };
+  }
+  legend.redraw();
 }
 
 function drawManhattan(track, options) {
@@ -390,7 +486,9 @@ function drawManhattan(track, options) {
     drawPoint(context, x, y, style, manhattanShape(feature, isReference), Number.isFinite(options.alpha) ? options.alpha : 0.92);
     feature.px = x;
     feature.py = y;
-    if (value > leadValue) {
+    const recordType = String(featureField(feature, ["record_type"]) || "").toLowerCase();
+    const currentIsReference = leadFeature?.genomeCanvasIsLDReference === true;
+    if (recordType !== "proxy" && ((isReference && !currentIsReference) || (isReference === currentIsReference && value > leadValue))) {
       leadFeature = feature;
       leadValue = value;
     }
@@ -398,14 +496,23 @@ function drawManhattan(track, options) {
 
   if (leadFeature) drawLeadLabel(context, leadFeature, leadValue, options.pixelWidth);
   context.save();
-  context.strokeStyle = "rgba(96, 104, 108, 0.34)";
+  context.strokeStyle = canvasTheme().axisLine;
   context.lineWidth = 1;
   context.beginPath();
   context.moveTo(0, height);
   context.lineTo(options.pixelWidth, height);
   context.stroke();
   context.restore();
-  drawLDLegend(context, options.pixelWidth, track.__genomeCanvasLDStatus);
+  // IGV pans its cached canvas without redrawing. A separate viewport overlay
+  // stays fixed during dragging; SVG/PNG exports still draw the same legend.
+  if (options.viewport?.viewportElement && typeof context.getSerializedSvg !== "function") {
+    updateViewportLegend(track, options.viewport);
+  } else {
+    context.save();
+    context.translate(-(Number(options.pixelXOffset) || 0), Number(options.contentTop) || 0);
+    drawLDLegend(context, Number(options.viewportWidth) || options.pixelWidth, track.__genomeCanvasLDStatus);
+    context.restore();
+  }
 }
 
 export function installManhattanRenderer(track) {
@@ -422,7 +529,7 @@ export function installManhattanRenderer(track) {
     };
   }
   const originalGetFeatures = track.getFeatures;
-  if (typeof originalGetFeatures === "function" && track.config?.ldEndpoint) {
+  if (typeof originalGetFeatures === "function") {
     track.getFeatures = async function getFeatures(...args) {
       const features = await originalGetFeatures.apply(this, args);
       return fetchLDForFeatures(this, features);

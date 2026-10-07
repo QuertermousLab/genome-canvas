@@ -1,6 +1,6 @@
+import { canvasTheme, withoutCanvasAdapter } from "./canvas-theme.mjs?v=20261007.2";
+
 const DEFAULT_HEATMAP_COLOR = "rgb(190, 38, 52)";
-const BACKGROUND_COLOR = "rgb(255, 255, 255)";
-const DIAGONAL_COLOR = "rgb(226, 229, 228)";
 
 function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
@@ -42,11 +42,12 @@ function parseRGB(color) {
     : [190, 38, 52];
 }
 
-function heatColor(color, value, maximum, alpha = 1) {
+function heatColor(color, value, maximum, alpha = 1, background = [255, 255, 255]) {
   const [red, green, blue] = parseRGB(color);
+  const [baseRed, baseGreen, baseBlue] = background;
   const intensity = maximum > 0 ? clamp(Math.log1p(Math.max(0, value)) / Math.log1p(maximum), 0, 1) : 0;
   const shaped = Math.pow(intensity, 0.72) * clamp(alpha, 0, 1);
-  return `rgb(${Math.round(255 + (red - 255) * shaped)}, ${Math.round(255 + (green - 255) * shaped)}, ${Math.round(255 + (blue - 255) * shaped)})`;
+  return `rgb(${Math.round(baseRed + (red - baseRed) * shaped)}, ${Math.round(baseGreen + (green - baseGreen) * shaped)}, ${Math.round(baseBlue + (blue - baseBlue) * shaped)})`;
 }
 
 function bestResolution(resolutions, bpPerPixel) {
@@ -121,14 +122,19 @@ function drawDiamond(context, centerX, centerY, halfWidth, halfHeight) {
 }
 
 function drawHicHeatmap(track, options) {
+  // Contacts fade into the canvas background, so empty cells match the theme.
+  return withoutCanvasAdapter(() => drawHicHeatmapCells(track, options, canvasTheme()));
+}
+
+function drawHicHeatmapCells(track, options, palette) {
   const { context, features = [], bpStart, bpPerPixel, pixelWidth, pixelHeight } = options;
   context.save();
-  context.fillStyle = BACKGROUND_COLOR;
+  context.fillStyle = palette.background;
   context.fillRect(0, options.pixelTop || 0, pixelWidth, pixelHeight);
   context.beginPath();
   context.moveTo(0, pixelHeight - 0.5);
   context.lineTo(pixelWidth, pixelHeight - 0.5);
-  context.strokeStyle = DIAGONAL_COLOR;
+  context.strokeStyle = palette.diagonal;
   context.lineWidth = 1;
   context.stroke();
 
@@ -145,7 +151,7 @@ function drawHicHeatmap(track, options) {
     const binSize = feature.binSize || Math.max(feature.end1 - feature.start1, feature.end2 - feature.start2);
     const halfCell = Math.max(0.65, binSize / (2 * bpPerPixel));
     if (centerX + halfCell < 0 || centerX - halfCell > pixelWidth || centerY + halfCell < 0 || centerY - halfCell > pixelHeight) continue;
-    context.fillStyle = heatColor(baseColor, feature.value, maximum, alpha);
+    context.fillStyle = heatColor(baseColor, feature.value, maximum, alpha, palette.backgroundRGB);
     drawDiamond(context, centerX, centerY, halfCell + 0.2, halfCell + 0.2);
   }
   context.restore();

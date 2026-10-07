@@ -19,7 +19,7 @@ class MacOSDesktopClientTests(unittest.TestCase):
 
     def test_client_uses_persistent_webkit_and_native_file_panels(self):
         source = (MAC_APP / "Sources" / "main.m").read_text(encoding="utf-8")
-        self.assertIn("http://127.0.0.1:8000/", source)
+        self.assertIn("http://171.65.68.140:8892/genome-canvas/", source)
         self.assertIn("[WKWebsiteDataStore defaultDataStore]", source)
         self.assertIn("WKDownloadDelegate", source)
         self.assertIn("[NSSavePanel savePanel]", source)
@@ -66,7 +66,7 @@ class MacOSDesktopClientTests(unittest.TestCase):
         self.assertIn("codesign --force --deep --sign -", script)
         self.assertIn("Resources/GenomeCanvas-1024.png", script)
         self.assertIn('Contents/Resources/LocalBackend', script)
-        self.assertIn('server.py workspace_store.py index.html styles.css app.js', script)
+        self.assertIn("server.py workspace_store.py index.html styles.css app.js", script)
         self.assertIn('public/favicon.svg', script)
         self.assertTrue((MAC_APP / "Resources" / "GenomeCanvas-1024.png").is_file())
 

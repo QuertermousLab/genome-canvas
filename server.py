@@ -7,6 +7,7 @@ short share links on this machine.
 """
 
 import argparse
+import gzip
 import hashlib
 import ipaddress
 import json
@@ -30,9 +31,12 @@ from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from workspace_store import WorkspaceError, WorkspaceStore
+from resource_cache import FileMemoryCache, ReferenceCache
 
 
 APP_DIR = Path(__file__).resolve().parent
+FONT_DIR = APP_DIR / "vendor" / "fonts"
+mimetypes.add_type("font/woff2", ".woff2")
 LOCAL_MODE = os.environ.get("GENOME_CANVAS_LOCAL_MODE", "").strip().lower() in ("1", "true", "yes", "on")
 STATE_DIR = Path(os.path.expanduser(os.environ.get(
     "GENOME_CANVAS_STATE_DIR",
@@ -42,6 +46,10 @@ SESSION_DIR = STATE_DIR / "sessions"
 PROFILE_DIR = STATE_DIR / "profiles"
 WORKSPACE_DB_FILE = STATE_DIR / "workspaces.sqlite3"
 CONFIG_FILE = APP_DIR / "genomecanvas.config.json"
+REFERENCE_CACHE = ReferenceCache(os.environ.get(
+    "GENOME_CANVAS_REFERENCE_DIR", str(STATE_DIR / "references")
+))
+FILE_MEMORY_CACHE = FileMemoryCache()
 MAX_SESSION_BYTES = 5 * 1024 * 1024
 MAX_PROFILE_BYTES = 5 * 1024 * 1024
 BUFFER_SIZE = 1024 * 1024
@@ -60,6 +68,14 @@ MAX_LD_CACHE_ENTRIES = 24
 DEFAULT_MAX_LD_WINDOW = 2 * 1000 * 1000
 WORKSPACE_COOKIE_NAME = "genome_canvas_workspace"
 MAX_WORKSPACE_BYTES = 16 * 1024
+# JSON responses and whole-file text tracks above this size are gzip encoded
+# when the client accepts it. Byte-range responses are never re-encoded.
+GZIP_MIN_BYTES = 1400
+PLAIN_TEXT_TRACK_SUFFIXES = (
+    ".bed", ".bedgraph", ".wig", ".gff", ".gff3", ".gtf", ".narrowpeak",
+    ".broadpeak", ".bedpe", ".interact", ".seg", ".maf", ".mut", ".gwas",
+    ".bp", ".qtl", ".bedmethyl", ".vcf", ".fa", ".fasta", ".fai",
+)
 
 TRACK_SUFFIXES = (
     ".bam", ".cram", ".vcf", ".vcf.gz", ".vcf.bgz", ".bcf",
@@ -84,6 +100,8 @@ STATIC_FILES = {
     "/manhattan-style.mjs": ("manhattan-style.mjs", "text/javascript; charset=utf-8"),
     "/public-hubs.mjs": ("public-hubs.mjs", "text/javascript; charset=utf-8"),
     "/highlights.mjs": ("highlights.mjs", "text/javascript; charset=utf-8"),
+    "/reference-resources.mjs": ("reference-resources.mjs", "text/javascript; charset=utf-8"),
+    "/canvas-theme.mjs": ("canvas-theme.mjs", "text/javascript; charset=utf-8"),
     "/favicon.svg": ("public/favicon.svg", "image/svg+xml"),
     "/vendor/igv.min.js": ("vendor/igv.min.js", "text/javascript; charset=utf-8"),
     "/vendor/IGV-LICENSE.txt": ("vendor/IGV-LICENSE.txt", "text/plain; charset=utf-8"),
@@ -360,7 +378,7 @@ def format_filename(path):
         return path.name
 
 
-def index_candidates(path):
+def index_candidates(path, sibling_names=None):
     def candidates_for(candidate):
         name = candidate.name.lower()
         candidates = []
@@ -385,6 +403,10 @@ def index_candidates(path):
     found = []
     seen = set()
     for candidate in candidates:
+        # A directory listing already knows its own entries; skip stat calls
+        # (each one is a network round trip on NFS) for absent siblings.
+        if sibling_names is not None and candidate.parent == path.parent and candidate.name not in sibling_names:
+            continue
         if candidate.is_file() and str(candidate) not in seen:
             found.append(candidate)
             seen.add(str(candidate))
@@ -400,32 +422,37 @@ def directory_payload(root_id, relative_path, roots=None):
     root_path = roots[root_id]["path"]
     entries = []
     try:
-        children = list(directory.iterdir())
+        # scandir reports entry types from the directory read itself, so large
+        # NFS directories only pay a stat for folders and track files.
+        with os.scandir(str(directory)) as iterator:
+            children = list(iterator)
     except PermissionError:
         raise PermissionError("Directory is not readable")
+    sibling_names = {item.name for item in children}
 
-    for child in children:
-        if child.name.startswith("."):
+    for item in children:
+        if item.name.startswith("."):
             continue
+        child = directory / item.name
         try:
-            if child.is_dir():
-                stat = child.stat()
+            if item.is_dir():
+                stat = item.stat()
                 entries.append({
                     "kind": "directory",
-                    "name": child.name,
+                    "name": item.name,
                     "path": str(child.relative_to(root_path)),
-                    "symlink": child.is_symlink(),
+                    "symlink": item.is_symlink(),
                     "modified": int(stat.st_mtime),
                 })
-            elif child.is_file() and is_track_file(child):
-                stat = child.stat()
+            elif item.is_file() and is_track_file(child):
+                stat = item.stat()
                 file_format, track_type = detect_format(format_filename(child))
-                indexes = index_candidates(child)
+                indexes = index_candidates(child, sibling_names)
                 entries.append({
                     "kind": "file",
-                    "name": child.name,
+                    "name": item.name,
                     "path": str(child.relative_to(root_path)),
-                    "symlink": child.is_symlink(),
+                    "symlink": item.is_symlink(),
                     "size": stat.st_size,
                     "modified": int(stat.st_mtime),
                     "format": file_format,
@@ -1092,6 +1119,7 @@ def list_profiles(owner="genome"):
 class GenomeCanvasHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "GenomeCanvas/1.0"
+    disable_nagle_algorithm = True
 
     def log_message(self, fmt, *args):
         print("{} - {}".format(self.address_string(), fmt % args))
@@ -1102,12 +1130,31 @@ class GenomeCanvasHandler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "SAMEORIGIN")
         super().end_headers()
 
+    def accepts_gzip(self):
+        accepted = False
+        for token in self.headers.get("Accept-Encoding", "").split(","):
+            parts = token.strip().split(";")
+            if parts[0].strip().lower() != "gzip":
+                continue
+            quality = next((part.strip()[2:] for part in parts[1:] if part.strip().startswith("q=")), "1")
+            try:
+                accepted = float(quality) > 0
+            except ValueError:
+                pass
+        return accepted
+
     def send_json(self, payload, status=200, headers=None):
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        compressed = len(body) >= GZIP_MIN_BYTES and self.accepts_gzip()
+        if compressed:
+            body = gzip.compress(body, compresslevel=5, mtime=0)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Vary", "Accept-Encoding")
+        if compressed:
+            self.send_header("Content-Encoding", "gzip")
         for name, value in (headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
@@ -1278,6 +1325,16 @@ class GenomeCanvasHandler(BaseHTTPRequestHandler):
                 self.send_json(self.workspace_payload())
             elif path in STATIC_FILES:
                 self.handle_static(path)
+            elif path.startswith("/vendor/fonts/"):
+                name = path[len("/vendor/fonts/"):]
+                font = FONT_DIR / name
+                if not re.fullmatch(r"[a-z0-9-]+\.woff2", name) or not font.is_file():
+                    raise FileNotFoundError("Font not found")
+                # Font files are content-stable; renaming a file is the cache key.
+                self.send_file(font, cache_control="public, max-age=31536000, immutable", memory_cache=True)
+            elif path.startswith("/reference/"):
+                reference = REFERENCE_CACHE.resolve(path[len("/reference/"):])
+                self.send_file(reference, cache_control="public, max-age=3600", memory_cache=True)
             elif path.startswith("/data/"):
                 # IGV.js may omit cookies on a subset of parallel byte-range
                 # requests. New local-data URLs carry their workspace id so
@@ -1289,6 +1346,7 @@ class GenomeCanvasHandler(BaseHTTPRequestHandler):
                 workspace = self.current_workspace()
                 roots = self.data_roots()
                 default_file = default_file_location(workspace, roots)
+                references = REFERENCE_CACHE.snapshot()
                 self.send_json({
                     "appName": SETTINGS.get("appName", "Genome Canvas"),
                     "user": workspace["name"],
@@ -1299,6 +1357,10 @@ class GenomeCanvasHandler(BaseHTTPRequestHandler):
                     "defaultLocus": SETTINGS.get("defaultLocus", "chr8:127,728,000-127,742,000"),
                     "defaultFileRoot": default_file["root"],
                     "defaultFilePath": default_file["path"],
+                    "genomeList": references.get("genomes", []),
+                    "referenceResources": references.get("resources", {}),
+                    "indexedReferenceTracks": references.get("indexedTracks", {}),
+                    "cachedGenomes": references.get("cachedGenomes", []),
                     "roots": [
                         {"id": root_id, "label": item["label"]}
                         for root_id, item in roots.items()
@@ -1658,12 +1720,37 @@ class GenomeCanvasHandler(BaseHTTPRequestHandler):
         path = (APP_DIR / relative).resolve()
         if not within_root(path, APP_DIR) or not path.is_file():
             raise FileNotFoundError("Static file not found")
-        body = path.read_bytes()
+        stat = path.stat()
+        replacements = ()
+        if request_path == "/vendor/igv.min.js":
+            mapping_url = "https://igv.org/data/url_mappings.tsv"
+            local_mapping = REFERENCE_CACHE.snapshot().get("resources", {}).get(mapping_url)
+            if local_mapping:
+                replacements = ((mapping_url.encode(), ("." + local_mapping).encode()),)
+        compressed = self.accepts_gzip()
+        variant = hashlib.sha256(repr(replacements).encode()).hexdigest()[:12] if replacements else ""
+        etag = '"{:x}-{:x}-{}{}"'.format(stat.st_mtime_ns, stat.st_size, variant, "-gzip" if compressed else "")
+        has_version = "v" in parse_qs(urlparse(self.path).query)
+        cache = "public, max-age=86400, immutable" if has_version else "no-cache"
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", cache)
+            self.send_header("Vary", "Accept-Encoding")
+            self.end_headers()
+            return
+        body = FILE_MEMORY_CACHE.get(path, stat, compressed, replacements)
+        if body is None:
+            body = path.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        cache = "public, max-age=31536000, immutable" if request_path.startswith("/vendor/") else "no-cache"
         self.send_header("Cache-Control", cache)
+        self.send_header("ETag", etag)
+        self.send_header("Last-Modified", formatdate(stat.st_mtime, usegmt=True))
+        self.send_header("Vary", "Accept-Encoding")
+        if compressed:
+            self.send_header("Content-Encoding", "gzip")
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
@@ -1717,11 +1804,52 @@ class GenomeCanvasHandler(BaseHTTPRequestHandler):
         if not path.is_file():
             raise FileNotFoundError("Data file not found")
 
+        self.send_file(path, compressible=path.name.lower().endswith(PLAIN_TEXT_TRACK_SUFFIXES))
+
+    def send_compressed_file(self, path, stat, cache_control):
+        """Send a whole plain-text track gzip encoded; returns False to fall back."""
+        etag = '"{:x}-{:x}-gzip"'.format(stat.st_mtime_ns, stat.st_size)
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Vary", "Accept-Encoding")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return True
+        body = FILE_MEMORY_CACHE.get(path, stat, True)
+        if body is None:
+            return False
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("ETag", etag)
+        self.send_header("Last-Modified", formatdate(stat.st_mtime, usegmt=True))
+        self.send_header("Cache-Control", cache_control)
+        self.send_header("Vary", "Accept-Encoding")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+        self.end_headers()
+        if self.command != "HEAD":
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+        return True
+
+    def send_file(self, path, cache_control="private, max-age=300", memory_cache=False, compressible=False):
         stat = path.stat()
         size = stat.st_size
         etag = '"{:x}-{:x}"'.format(stat.st_mtime_ns, size)
         range_header = self.headers.get("Range")
         start, end, status = 0, max(0, size - 1), 200
+
+        if (compressible and not range_header and size >= GZIP_MIN_BYTES
+                and size <= FILE_MEMORY_CACHE.item_limit and self.accepts_gzip()
+                and self.send_compressed_file(path, stat, cache_control)):
+            return
 
         if range_header:
             match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header.strip())
@@ -1755,7 +1883,9 @@ class GenomeCanvasHandler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("ETag", etag)
         self.send_header("Last-Modified", formatdate(stat.st_mtime, usegmt=True))
-        self.send_header("Cache-Control", "private, max-age=300")
+        self.send_header("Cache-Control", cache_control)
+        if compressible:
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
         if status == 206:
@@ -1765,6 +1895,11 @@ class GenomeCanvasHandler(BaseHTTPRequestHandler):
         if self.command == "HEAD" or length == 0:
             return
         try:
+            if memory_cache:
+                body = FILE_MEMORY_CACHE.get(path, stat)
+                if body is not None:
+                    self.wfile.write(memoryview(body)[start:end + 1])
+                    return
             with path.open("rb") as handle:
                 handle.seek(start)
                 remaining = length
@@ -1786,6 +1921,8 @@ class GenomeCanvasHandler(BaseHTTPRequestHandler):
 
 class GenomeCanvasHTTPServer(ThreadingHTTPServer):
     """Threaded server that does not log normal client disconnects as errors."""
+
+    request_queue_size = 256
 
     def __init__(self, server_address, request_handler, workspace_store, home_root=HOME_ROOT):
         self.workspace_store = workspace_store

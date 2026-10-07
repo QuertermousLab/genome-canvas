@@ -38,16 +38,12 @@ yarn-error.log*
 /.wrangler/
 /outputs/
 /work/
-__pycache__/
-*.py[cod]
-*.sqlite3*
-*.log
-*.pid
-*.zip
-/macos/GenomeCanvasDesktop/dist/
 
 # Genome Canvas local state and data
 /.genomecanvas/
 /genomecanvas.config.json
 /data/*
 !/data/README.md
+
+# Local rollback snapshots
+/backup/
