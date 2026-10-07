@@ -6,6 +6,9 @@ share, and export controls are macOS controls; the embedded `WKWebView` is
 limited to the IGV genome canvas and data/profile dialogs. It does not launch
 Safari.
 
+The native window uses the same Nord light and dark themes, fonts and sidebar
+layout as the web interface, and follows the macOS appearance automatically.
+
 It can either start its bundled local backend or connect to a shared Genome
 Canvas server. Local mode browses files on the Mac directly and does not need
 `/nfs`, uploads, a separate server checkout, or user/workspace switching.
@@ -76,7 +79,15 @@ selects its bundled compiler automatically.
 - Cookies use WebKit's persistent data store, so the selected workspace remains
   selected between launches.
 - Workspaces and loaded tracks are shown in the native sidebar. Tracks can be
-  reordered by dragging full rows and removed with **Remove Selected Track**.
+  reordered by dragging full rows. Hover a row and click **×** to remove it, or
+  select it and press **⌘⌫** (**Edit → Remove Selected Track**).
+- The appearance follows macOS by default. The ☾/☀ toolbar button switches
+  between light and dark (choosing the theme macOS already uses returns to
+  automatic); **View → Appearance** offers **Use System Setting**, **Light**,
+  **Dark** and **Toggle Light/Dark** (**⇧⌘T**). The choice is saved, and the
+  genome canvas follows it; exported PNGs always use the white light palette.
+- Interface fonts (Manrope, Fraunces, JetBrains Mono; SIL OFL) are bundled as
+  variable TrueType files in `Resources/Fonts`, matching the web interface.
 - The workspace row has native **＋**, delete, and manage controls. **＋** creates
   a temporary/manual project whose Favorites and file history are isolated and
   whose default server location is `/nfs`; Home workspaces cannot be deleted
@@ -89,6 +100,23 @@ selects its bundled compiler automatically.
   current LAN deployment does not use HTTPS.
 - A validated 1024-pixel PNG icon master is included so building does not rely
   on the version-dependent SVG support in `sips`.
+
+## Previewing interface changes without a Mac
+
+AppKit only builds on macOS. Pushing a branch named `mac-ui-*` runs the
+**macOS UI preview** workflow, which builds the app on a GitHub-hosted Mac,
+starts it in **This Mac** mode with `GENOME_CANVAS_SNAPSHOT_DIR` set, and
+uploads `window-light.png` and `window-dark.png` as the `macos-ui-preview`
+artifact. The snapshot variable is only used by that workflow; normal launches
+ignore it.
+
+## Releases
+
+Pushing a `v*` tag builds signed-ad-hoc arm64 and x86_64 archives and publishes
+them with `RELEASE_NOTES.md` as the release description. Before tagging, bump
+`CFBundleShortVersionString`/`CFBundleVersion` in `Resources/Info.plist`, update
+`RELEASE_NOTES.md`, and add any new backend or frontend files to the
+`LocalBackend` list in `build.sh`.
 
 The server remains responsible for the IGV renderer, tracks, LD computation,
 Favorites, shared views, file access, and public hubs. Updating the server

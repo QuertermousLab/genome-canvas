@@ -31,7 +31,7 @@ Genome Canvas is a local-network genome browser for laboratories and research te
 
 ### Native macOS app
 
-![Genome Canvas native macOS application with regional association and gene tracks](docs/images/macos-app.png)
+![Genome Canvas native macOS application in the Nord light theme](docs/images/macos-app.png)
 
 ### Exported PNG
 
@@ -73,6 +73,9 @@ JupyterLab remains at `/lab` with its existing login. Genome Canvas uses a passw
 macOS 13 or later. AppKit owns the toolbar, workspace and track sidebar,
 drag-to-reorder list, navigation, highlights, sharing, export and connection
 status. WebKit is used only for the IGV genome canvas and server-backed dialogs.
+The native window uses the same Nord light/dark themes, fonts and sidebar layout
+as the web interface; it follows the macOS appearance, with a manual choice in
+the toolbar and **View → Appearance**.
 
 The desktop app has two data-source modes:
 
@@ -294,4 +297,4 @@ This is a LAN tool, not a multi-user account system. The backend only serves fil
 npm test
 ```
 
-The tests use Python's standard library and Node.js built-in test runner and do not require internet access. IGV.js is distributed under the MIT License; its license is stored at `vendor/IGV-LICENSE.txt`. See the [official IGV.js documentation](https://igv.org/doc/igvjs/) for additional browser options and format details.
+The tests use Python's standard library and Node.js built-in test runner and do not require internet access. CI runs them on every push. Native macOS interface changes can be previewed on a GitHub-hosted Mac by pushing a `mac-ui-*` branch, and pushing a `v*` tag publishes the macOS release; see the [macOS client README](macos/GenomeCanvasDesktop/README.md). IGV.js is distributed under the MIT License; its license is stored at `vendor/IGV-LICENSE.txt`. See the [official IGV.js documentation](https://igv.org/doc/igvjs/) for additional browser options and format details.
