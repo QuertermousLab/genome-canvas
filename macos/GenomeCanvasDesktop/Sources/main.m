@@ -1,43 +1,428 @@
 #import <AppKit/AppKit.h>
+#import <CoreText/CoreText.h>
 #import <WebKit/WebKit.h>
 #include <math.h>
 #include <stdio.h>
 
 static NSString * const GCDefaultServerAddress = @"http://171.65.68.140:8892/genome-canvas/";
 static NSString * const GCServerDefaultsKey = @"GenomeCanvasServerAddress";
+static NSString * const GCAppearanceDefaultsKey = @"GenomeCanvasAppearance";
 static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desktop.track-row";
 
-@interface GCAppDelegate : NSObject <NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandler, NSTableViewDataSource, NSTableViewDelegate>
+#pragma mark - Nord palette
+
+// These mirror the CSS custom properties in styles.css: :root is Nord
+// "Snow Storm" (light) and html[data-theme="dark"] is Nord "Polar Night".
+static NSColor *GCHex(uint32_t rgb, CGFloat alpha) {
+    return [NSColor colorWithSRGBRed:((rgb >> 16) & 0xff) / 255.0 green:((rgb >> 8) & 0xff) / 255.0 blue:(rgb & 0xff) / 255.0 alpha:alpha];
+}
+
+static BOOL GCAppearanceIsDark(NSAppearance *appearance) {
+    NSAppearanceName match = [appearance bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
+    return [match isEqualToString:NSAppearanceNameDarkAqua];
+}
+
+static NSColor *GCDynamic(uint32_t light, CGFloat lightAlpha, uint32_t dark, CGFloat darkAlpha) {
+    NSColor *lightColor = GCHex(light, lightAlpha);
+    NSColor *darkColor = GCHex(dark, darkAlpha);
+    return [NSColor colorWithName:nil dynamicProvider:^NSColor *(NSAppearance *appearance) {
+        return GCAppearanceIsDark(appearance) ? darkColor : lightColor;
+    }];
+}
+
+#define GC_COLOR(name, light, lightAlpha, dark, darkAlpha) \
+    static NSColor *name(void) { \
+        static NSColor *color; static dispatch_once_t once; \
+        dispatch_once(&once, ^{ color = GCDynamic(light, lightAlpha, dark, darkAlpha); }); \
+        return color; \
+    }
+
+GC_COLOR(GCBackgroundColor, 0xe5e9f0, 1, 0x242933, 1)
+GC_COLOR(GCRailColor, 0xe5e9f0, 1, 0x2a303b, 1)
+GC_COLOR(GCSurfaceColor, 0xf8f9fb, 1, 0x2e3440, 1)
+GC_COLOR(GCSurface3Color, 0xe5e9f0, 1, 0x3b4252, 1)
+GC_COLOR(GCHoverColor, 0xe9edf2, 1, 0x394050, 1)
+GC_COLOR(GCBorderColor, 0xd8dee9, 1, 0x3b4252, 1)
+GC_COLOR(GCBorderStrongColor, 0xc0c8d4, 1, 0x4c566a, 1)
+GC_COLOR(GCDividerColor, 0xe5e9f0, 1, 0x3b4252, 1)
+GC_COLOR(GCTextColor, 0x2e3440, 1, 0xeceff4, 1)
+GC_COLOR(GCText2Color, 0x434c5e, 1, 0xd8dee9, 1)
+GC_COLOR(GCText3Color, 0x69728a, 1, 0x9aa5b8, 1)
+GC_COLOR(GCText4Color, 0x9aa2b1, 1, 0x687286, 1)
+GC_COLOR(GCAccentColor, 0x4c7a86, 1, 0x88c0d0, 1)
+GC_COLOR(GCAccentHoverColor, 0x3f6873, 1, 0x9dcfdc, 1)
+GC_COLOR(GCAccentSoftColor, 0xe0ebee, 1, 0x88c0d0, 0.14)
+GC_COLOR(GCAccentRingColor, 0x4c7a86, 0.28, 0x88c0d0, 0.40)
+GC_COLOR(GCAccentTextColor, 0x3a6570, 1, 0x8fd3e3, 1)
+GC_COLOR(GCOnAccentColor, 0xffffff, 1, 0x242933, 1)
+GC_COLOR(GCBrandGlyphColor, 0x5e7f8c, 1, 0x5e81ac, 1)
+GC_COLOR(GCCanvasColor, 0xffffff, 1, 0x2e3440, 1)
+GC_COLOR(GCSuccessColor, 0x7a9a5e, 1, 0xa3be8c, 1)
+GC_COLOR(GCWarningColor, 0xd4a94f, 1, 0xebcb8b, 1)
+GC_COLOR(GCDangerColor, 0xbf616a, 1, 0xbf616a, 1)
+GC_COLOR(GCDangerSoftColor, 0xf6e4e6, 1, 0xbf616a, 0.18)
+GC_COLOR(GCGreenSoftColor, 0xe6eedd, 1, 0xa3be8c, 0.16)
+GC_COLOR(GCGreenTextColor, 0x5a7642, 1, 0xb9d4a2, 1)
+
+#pragma mark - Bundled fonts
+
+// Manrope, Fraunces and JetBrains Mono are the web interface's fonts (SIL OFL),
+// bundled as variable TrueType files in Resources/Fonts.
+static void GCRegisterBundledFonts(void) {
+    for (NSURL *url in [[NSBundle mainBundle] URLsForResourcesWithExtension:@"ttf" subdirectory:@"Fonts"] ?: @[]) {
+        CTFontManagerRegisterFontsForURL((__bridge CFURLRef)url, kCTFontManagerScopeProcess, NULL);
+    }
+}
+
+static NSFont *GCVariableFont(NSString *family, CGFloat size, CGFloat weight, BOOL monospaced) {
+    static NSMutableDictionary<NSString *, NSFont *> *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cache = [NSMutableDictionary dictionary]; });
+    NSString *key = [NSString stringWithFormat:@"%@-%.1f-%.0f", family, size, weight];
+    NSFont *cached = cache[key];
+    if (cached) return cached;
+    NSFontDescriptor *descriptor = [NSFontDescriptor fontDescriptorWithFontAttributes:@{
+        NSFontFamilyAttribute: family,
+        NSFontVariationAttribute: @{@(0x77676874): @(weight)},  // 'wght'
+    }];
+    NSFont *font = [NSFont fontWithDescriptor:descriptor size:size];
+    if (!font || ![font.familyName isEqualToString:family]) {
+        NSFontWeight fallback = weight >= 600 ? NSFontWeightSemibold : weight >= 500 ? NSFontWeightMedium : NSFontWeightRegular;
+        font = monospaced ? [NSFont monospacedSystemFontOfSize:size weight:fallback] : [NSFont systemFontOfSize:size weight:fallback];
+    }
+    cache[key] = font;
+    return font;
+}
+
+static NSFont *GCUIFont(CGFloat size, CGFloat weight) { return GCVariableFont(@"Manrope", size, weight, NO); }
+static NSFont *GCHeadingFont(CGFloat size) { return GCVariableFont(@"Fraunces", size, 600, NO); }
+static NSFont *GCMonoFont(CGFloat size, CGFloat weight) { return GCVariableFont(@"JetBrains Mono", size, weight, YES); }
+
+static NSView *GCFindView(NSView *root, NSString *identifier) {
+    if ([root.identifier isEqualToString:identifier]) return root;
+    for (NSView *child in root.subviews) {
+        NSView *found = GCFindView(child, identifier);
+        if (found) return found;
+    }
+    return nil;
+}
+
+static NSImage *GCSymbol(NSString *name, CGFloat pointSize, NSString *description) {
+    NSImage *image = [NSImage imageWithSystemSymbolName:name accessibilityDescription:description];
+    NSImageSymbolConfiguration *configuration = [NSImageSymbolConfiguration configurationWithPointSize:pointSize weight:NSFontWeightMedium];
+    return [image imageWithSymbolConfiguration:configuration] ?: image;
+}
+
+#pragma mark - Themed views
+
+// A rounded, filled and optionally stroked panel. It draws with dynamic colors
+// in drawRect:, so it follows light/dark changes and renders in snapshots.
+@interface GCFillView : NSView
+@property(nonatomic, strong) NSColor *fillColor;
+@property(nonatomic, strong) NSColor *strokeColor;
+@property(nonatomic) CGFloat cornerRadius;
+@property(nonatomic) BOOL clipsContent;
+@end
+
+@implementation GCFillView
+- (instancetype)initWithFrame:(NSRect)frame {
+    if ((self = [super initWithFrame:frame])) self.translatesAutoresizingMaskIntoConstraints = NO;
+    return self;
+}
+- (void)setFillColor:(NSColor *)fillColor { _fillColor = fillColor; self.needsDisplay = YES; }
+- (void)setStrokeColor:(NSColor *)strokeColor { _strokeColor = strokeColor; self.needsDisplay = YES; }
+- (void)setCornerRadius:(CGFloat)cornerRadius {
+    _cornerRadius = cornerRadius;
+    if (self.layer) self.layer.cornerRadius = cornerRadius;
+    self.needsDisplay = YES;
+}
+- (void)setClipsContent:(BOOL)clipsContent {
+    _clipsContent = clipsContent;
+    if (clipsContent) self.wantsLayer = YES;
+    self.layer.cornerRadius = self.cornerRadius;
+    self.layer.masksToBounds = clipsContent;
+}
+- (void)drawRect:(NSRect)dirtyRect {
+    NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5) xRadius:self.cornerRadius yRadius:self.cornerRadius];
+    if (self.fillColor) { [self.fillColor setFill]; [path fill]; }
+    if (self.strokeColor) { [self.strokeColor setStroke]; path.lineWidth = 1; [path stroke]; }
+}
+@end
+
+typedef NS_ENUM(NSInteger, GCButtonStyle) {
+    GCButtonStylePrimary,    // .primary-button
+    GCButtonStyleSecondary,  // .secondary-button / .source-actions button
+    GCButtonStyleGhost,      // .quiet-button / .icon-button.ghost
+    GCButtonStyleTool,       // .tool-button (toggles to the accent state)
+    GCButtonStyleSegment,    // data-source segmented control
+};
+
+// Borderless NSButton with the web interface's button styles drawn behind
+// AppKit's own image and title rendering.
+@interface GCButton : NSButton
+@property(nonatomic) GCButtonStyle style;
+@property(nonatomic, copy) NSString *label;
+@property(nonatomic) BOOL hovered;
+@property(nonatomic) CGFloat fixedHeight;
+@property(nonatomic, strong) NSTrackingArea *hoverArea;
++ (instancetype)buttonWithLabel:(NSString *)label symbol:(NSString *)symbol style:(GCButtonStyle)style target:(id)target action:(SEL)action;
+- (void)refreshColors;
+@end
+
+@implementation GCButton
++ (instancetype)buttonWithLabel:(NSString *)label symbol:(NSString *)symbol style:(GCButtonStyle)style target:(id)target action:(SEL)action {
+    GCButton *button = [[self alloc] initWithFrame:NSZeroRect];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    button.bordered = NO;
+    button.style = style;
+    button.target = target;
+    button.action = action;
+    button.fixedHeight = 32;
+    button.font = GCUIFont(13, style == GCButtonStylePrimary ? 650 : 550);
+    if (symbol.length) {
+        button.image = GCSymbol(symbol, 13, label ?: symbol);
+        button.imagePosition = label.length ? NSImageLeading : NSImageOnly;
+        button.imageHugsTitle = YES;
+    }
+    button.label = label ?: @"";
+    if (!label.length) button.toolTip = symbol;
+    return button;
+}
+- (void)setLabel:(NSString *)label { _label = [label copy]; [self refreshColors]; [self invalidateIntrinsicContentSize]; }
+- (void)setHovered:(BOOL)hovered { if (_hovered == hovered) return; _hovered = hovered; [self refreshColors]; }
+- (void)setState:(NSControlStateValue)state { [super setState:state]; [self refreshColors]; }
+- (void)setEnabled:(BOOL)enabled { [super setEnabled:enabled]; [self refreshColors]; }
+- (void)setStyle:(GCButtonStyle)style { _style = style; [self refreshColors]; }
+- (NSColor *)foregroundColor {
+    if (!self.enabled) return GCText4Color();
+    BOOL on = self.state == NSControlStateValueOn;
+    switch (self.style) {
+        case GCButtonStylePrimary: return GCOnAccentColor();
+        case GCButtonStyleTool: return on ? GCAccentTextColor() : (self.hovered ? GCTextColor() : GCText2Color());
+        case GCButtonStyleSegment: return on ? GCTextColor() : GCText3Color();
+        default: return self.hovered ? GCTextColor() : GCText2Color();
+    }
+}
+- (void)refreshColors {
+    NSColor *foreground = [self foregroundColor];
+    self.contentTintColor = foreground;
+    NSMutableParagraphStyle *paragraph = [[NSMutableParagraphStyle alloc] init];
+    paragraph.alignment = NSTextAlignmentCenter;
+    paragraph.lineBreakMode = NSLineBreakByTruncatingTail;
+    self.attributedTitle = [[NSAttributedString alloc] initWithString:self.label ?: @"" attributes:@{
+        NSForegroundColorAttributeName: foreground,
+        NSFontAttributeName: self.font ?: GCUIFont(13, 550),
+        NSParagraphStyleAttributeName: paragraph,
+    }];
+    self.needsDisplay = YES;
+}
+- (NSSize)intrinsicContentSize {
+    if (!self.label.length) return NSMakeSize(self.fixedHeight, self.fixedHeight);
+    NSSize size = [super intrinsicContentSize];
+    return NSMakeSize(ceil(size.width + 24), self.fixedHeight);
+}
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (self.hoverArea) [self removeTrackingArea:self.hoverArea];
+    self.hoverArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect
+        options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect owner:self userInfo:nil];
+    [self addTrackingArea:self.hoverArea];
+}
+- (void)mouseEntered:(NSEvent *)event { self.hovered = YES; }
+- (void)mouseExited:(NSEvent *)event { self.hovered = NO; }
+- (void)viewDidChangeEffectiveAppearance { [super viewDidChangeEffectiveAppearance]; [self refreshColors]; }
+- (void)drawRect:(NSRect)dirtyRect {
+    BOOL active = self.enabled && (self.hovered || self.cell.isHighlighted);
+    BOOL on = self.state == NSControlStateValueOn;
+    NSColor *fill = nil;
+    NSColor *stroke = nil;
+    CGFloat radius = self.style == GCButtonStyleSegment ? 7 : 9;
+    switch (self.style) {
+        case GCButtonStylePrimary:
+            fill = !self.enabled ? GCSurface3Color() : (active ? GCAccentHoverColor() : GCAccentColor());
+            break;
+        case GCButtonStyleSecondary:
+            fill = active ? GCHoverColor() : GCSurfaceColor();
+            stroke = GCBorderColor();
+            break;
+        case GCButtonStyleTool:
+            fill = on ? GCAccentSoftColor() : (active ? GCHoverColor() : GCSurfaceColor());
+            stroke = on ? GCAccentColor() : GCBorderColor();
+            break;
+        case GCButtonStyleGhost:
+            fill = active ? GCHoverColor() : nil;
+            break;
+        case GCButtonStyleSegment:
+            fill = on ? GCSurfaceColor() : (active ? GCHoverColor() : nil);
+            stroke = on ? GCBorderColor() : nil;
+            break;
+    }
+    NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5) xRadius:radius yRadius:radius];
+    if (fill) { [fill setFill]; [path fill]; }
+    if (stroke) { [stroke setStroke]; path.lineWidth = 1; [path stroke]; }
+    [super drawRect:dirtyRect];
+}
+@end
+
+// The web rail's "Open server files" card: icon tile, title, detail, chevron.
+@interface GCCardButton : NSButton
+@property(nonatomic, strong) NSTextField *titleLabel;
+@property(nonatomic, strong) NSTextField *detailLabel;
+@property(nonatomic, strong) NSImageView *chevron;
+@property(nonatomic) BOOL hovered;
+@property(nonatomic, strong) NSTrackingArea *hoverArea;
+@end
+
+@implementation GCCardButton
+- (instancetype)initWithFrame:(NSRect)frame {
+    if (!(self = [super initWithFrame:frame])) return nil;
+    self.translatesAutoresizingMaskIntoConstraints = NO;
+    self.bordered = NO;
+    self.title = @"";
+    GCFillView *tile = [[GCFillView alloc] initWithFrame:NSZeroRect];
+    tile.fillColor = GCBrandGlyphColor();
+    tile.cornerRadius = 9;
+    NSImageView *glyph = [NSImageView imageViewWithImage:GCSymbol(@"server.rack", 16, @"Server files")];
+    glyph.translatesAutoresizingMaskIntoConstraints = NO;
+    glyph.contentTintColor = GCHex(0xeceff4, 1);
+    [tile addSubview:glyph];
+    self.titleLabel = [NSTextField labelWithString:@""];
+    self.titleLabel.font = GCUIFont(13.5, 650);
+    self.titleLabel.textColor = GCTextColor();
+    self.detailLabel = [NSTextField wrappingLabelWithString:@""];
+    self.detailLabel.font = GCUIFont(12, 450);
+    self.detailLabel.textColor = GCText3Color();
+    self.detailLabel.maximumNumberOfLines = 2;
+    NSStackView *copy = [NSStackView stackViewWithViews:@[self.titleLabel, self.detailLabel]];
+    copy.translatesAutoresizingMaskIntoConstraints = NO;
+    copy.orientation = NSUserInterfaceLayoutOrientationVertical;
+    copy.alignment = NSLayoutAttributeLeading;
+    copy.spacing = 2;
+    self.chevron = [NSImageView imageViewWithImage:GCSymbol(@"chevron.right", 11, @"Open")];
+    self.chevron.translatesAutoresizingMaskIntoConstraints = NO;
+    self.chevron.contentTintColor = GCText4Color();
+    [self addSubview:tile];
+    [self addSubview:copy];
+    [self addSubview:self.chevron];
+    [NSLayoutConstraint activateConstraints:@[
+        [tile.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:12],
+        [tile.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+        [tile.widthAnchor constraintEqualToConstant:36], [tile.heightAnchor constraintEqualToConstant:36],
+        [glyph.centerXAnchor constraintEqualToAnchor:tile.centerXAnchor],
+        [glyph.centerYAnchor constraintEqualToAnchor:tile.centerYAnchor],
+        [copy.leadingAnchor constraintEqualToAnchor:tile.trailingAnchor constant:11],
+        [copy.trailingAnchor constraintLessThanOrEqualToAnchor:self.chevron.leadingAnchor constant:-8],
+        [copy.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+        [self.detailLabel.widthAnchor constraintLessThanOrEqualToConstant:170],
+        [self.chevron.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-12],
+        [self.chevron.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+        [self.heightAnchor constraintEqualToConstant:64],
+    ]];
+    return self;
+}
+- (NSView *)hitTest:(NSPoint)point { return [super hitTest:point] ? self : nil; }
+- (void)setHovered:(BOOL)hovered {
+    _hovered = hovered;
+    self.chevron.contentTintColor = hovered ? GCAccentColor() : GCText4Color();
+    self.needsDisplay = YES;
+}
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (self.hoverArea) [self removeTrackingArea:self.hoverArea];
+    self.hoverArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect
+        options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect owner:self userInfo:nil];
+    [self addTrackingArea:self.hoverArea];
+}
+- (void)mouseEntered:(NSEvent *)event { self.hovered = YES; }
+- (void)mouseExited:(NSEvent *)event { self.hovered = NO; }
+- (void)drawRect:(NSRect)dirtyRect {
+    NSRect frame = NSInsetRect(self.bounds, 2, 2);
+    if (self.hovered) {
+        NSBezierPath *ring = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(frame, -1.5, -1.5) xRadius:14.5 yRadius:14.5];
+        ring.lineWidth = 3;
+        [GCAccentRingColor() setStroke];
+        [ring stroke];
+    }
+    NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(frame, 0.5, 0.5) xRadius:13 yRadius:13];
+    [GCSurfaceColor() setFill];
+    [path fill];
+    [(self.hovered ? GCAccentColor() : GCBorderColor()) setStroke];
+    path.lineWidth = 1;
+    [path stroke];
+}
+@end
+
+// Track rows: rounded hover and selection fills like .track-item, and the
+// per-row remove button only while hovered or selected.
+@interface GCTrackRowView : NSTableRowView
+@property(nonatomic) BOOL hovered;
+@property(nonatomic, strong) NSTrackingArea *hoverArea;
+@end
+
+@implementation GCTrackRowView
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (self.hoverArea) [self removeTrackingArea:self.hoverArea];
+    self.hoverArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect
+        options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect owner:self userInfo:nil];
+    [self addTrackingArea:self.hoverArea];
+}
+- (void)mouseEntered:(NSEvent *)event { self.hovered = YES; }
+- (void)mouseExited:(NSEvent *)event { self.hovered = NO; }
+- (void)setHovered:(BOOL)hovered { _hovered = hovered; [self updateRemoveButton]; self.needsDisplay = YES; }
+- (void)setSelected:(BOOL)selected { [super setSelected:selected]; [self updateRemoveButton]; }
+- (void)didAddSubview:(NSView *)subview { [super didAddSubview:subview]; [self updateRemoveButton]; }
+- (void)updateRemoveButton { GCFindView(self, @"TrackRemove").hidden = !(self.hovered || self.selected); }
+- (NSBackgroundStyle)interiorBackgroundStyle { return NSBackgroundStyleNormal; }
+- (NSBezierPath *)rowPath { return [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 2, 1) xRadius:9 yRadius:9]; }
+- (void)drawBackgroundInRect:(NSRect)dirtyRect {
+    if (self.hovered && !self.selected) { [GCHoverColor() setFill]; [[self rowPath] fill]; }
+}
+- (void)drawSelectionInRect:(NSRect)dirtyRect { [GCAccentSoftColor() setFill]; [[self rowPath] fill]; }
+@end
+
+// Thin divider that disappears into the light background and shows as a
+// hairline in dark mode, matching the web rail.
+@interface GCSplitView : NSSplitView
+@end
+
+@implementation GCSplitView
+- (NSColor *)dividerColor { return GCDividerColor(); }
+@end
+
+@interface GCAppDelegate : NSObject <NSApplicationDelegate, NSMenuItemValidation, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandler, NSTableViewDataSource, NSTableViewDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) WKWebView *webView;
-@property(nonatomic, strong) NSSegmentedControl *connectionModeControl;
+@property(nonatomic, strong) GCButton *localModeButton;
+@property(nonatomic, strong) GCButton *serverModeButton;
 @property(nonatomic, strong) NSTextField *workspaceLabel;
 @property(nonatomic, strong) NSStackView *workspaceControls;
 @property(nonatomic, strong) NSPopUpButton *workspacePopup;
-@property(nonatomic, strong) NSButton *deleteWorkspaceButton;
-@property(nonatomic, strong) NSButton *filesButton;
+@property(nonatomic, strong) GCButton *deleteWorkspaceButton;
+@property(nonatomic, strong) GCCardButton *filesButton;
 @property(nonatomic, strong) NSMenuItem *openFilesMenuItem;
 @property(nonatomic, strong) NSMenuItem *localBackendMenuItem;
 @property(nonatomic, strong) NSMenuItem *remoteServerMenuItem;
-@property(nonatomic, strong) NSLayoutConstraint *remoteSourceTopConstraint;
-@property(nonatomic, strong) NSLayoutConstraint *localSourceTopConstraint;
+@property(nonatomic, strong) NSArray<NSMenuItem *> *appearanceMenuItems;
 @property(nonatomic, strong) NSPopUpButton *genomePopup;
 @property(nonatomic, strong) NSTextField *locusField;
-@property(nonatomic, strong) NSTextField *statusDot;
+@property(nonatomic, strong) GCFillView *statusDot;
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSTextField *trackCountLabel;
 @property(nonatomic, strong) NSTableView *trackTable;
-@property(nonatomic, strong) NSButton *removeTrackButton;
-@property(nonatomic, strong) NSButton *highlightButton;
-@property(nonatomic, strong) NSButton *clearHighlightsButton;
+@property(nonatomic, strong) GCButton *highlightButton;
+@property(nonatomic, strong) GCButton *clearHighlightsButton;
+@property(nonatomic, strong) GCButton *themeButton;
 @property(nonatomic, strong) NSColorWell *highlightColorWell;
-@property(nonatomic, strong) NSButton *reloadButton;
-@property(nonatomic, strong) NSProgressIndicator *progressIndicator;
+@property(nonatomic, strong) GCButton *reloadButton;
+@property(nonatomic, strong) GCFillView *progressBar;
+@property(nonatomic, strong) NSLayoutConstraint *progressWidthConstraint;
 @property(nonatomic, strong) NSMapTable<WKDownload *, NSURL *> *downloadDestinations;
 @property(nonatomic, copy) NSArray<NSDictionary *> *tracks;
 @property(nonatomic, copy) NSArray<NSDictionary *> *workspaces;
 @property(nonatomic, copy) NSString *serverAddress;
 @property(nonatomic) BOOL localMode;
+@property(nonatomic) BOOL snapshotScheduled;
 @property(nonatomic, strong) NSTask *localServerTask;
 @property(nonatomic, strong) NSFileHandle *localServerLogHandle;
 @property(nonatomic, copy) NSString *localServerAddress;
@@ -46,6 +431,7 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
 @implementation GCAppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
+    GCRegisterBundledFonts();
     self.downloadDestinations = [NSMapTable weakToStrongObjectsMapTable];
     self.tracks = @[];
     self.workspaces = @[];
@@ -53,6 +439,9 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
     NSString *savedAddress = [defaults stringForKey:GCServerDefaultsKey];
     self.serverAddress = savedAddress ?: GCDefaultServerAddress;
     self.localMode = NO;
+    // Preview builds capture the window in both themes (see macos-preview.yml);
+    // they use the bundled backend so no server is needed.
+    if ([self snapshotDirectory].length) self.localMode = YES;
     [self buildApplicationMenu];
 
     NSRect frame = NSMakeRect(0, 0, 1480, 900);
@@ -63,25 +452,27 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
     self.window = [[NSWindow alloc] initWithContentRect:frame styleMask:style backing:NSBackingStoreBuffered defer:NO];
     self.window.title = @"Genome Canvas";
     self.window.subtitle = @"Native genomics workbench";
-    self.window.minSize = NSMakeSize(1120, 680);
-    self.window.titlebarAppearsTransparent = NO;
-    self.window.backgroundColor = [NSColor windowBackgroundColor];
+    self.window.minSize = NSMakeSize(1140, 680);
+    self.window.titlebarAppearsTransparent = YES;
+    self.window.backgroundColor = GCBackgroundColor();
     [self.window center];
 
-    NSSplitView *splitView = [[NSSplitView alloc] initWithFrame:frame];
+    GCSplitView *splitView = [[GCSplitView alloc] initWithFrame:frame];
     splitView.translatesAutoresizingMaskIntoConstraints = NO;
     splitView.vertical = YES;
     splitView.dividerStyle = NSSplitViewDividerStyleThin;
     self.window.contentView = splitView;
 
-    NSVisualEffectView *sidebar = [self buildSidebar];
+    NSView *sidebar = [self buildSidebar];
     NSView *content = [self buildGenomeContent];
     [splitView addArrangedSubview:sidebar];
     [splitView addArrangedSubview:content];
-    [sidebar.widthAnchor constraintEqualToConstant:264].active = YES;
+    [sidebar.widthAnchor constraintEqualToConstant:280].active = YES;
 
     [self.webView addObserver:self forKeyPath:@"estimatedProgress"
                       options:NSKeyValueObservingOptionInitial | NSKeyValueObservingOptionNew context:NULL];
+    [NSApp addObserver:self forKeyPath:@"effectiveAppearance" options:NSKeyValueObservingOptionNew context:NULL];
+    [self applyAppearancePreference];
 
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
@@ -90,120 +481,113 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
     else [self loadServerAddress:self.serverAddress remember:NO];
 }
 
-- (NSVisualEffectView *)buildSidebar {
-    NSVisualEffectView *sidebar = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
-    sidebar.translatesAutoresizingMaskIntoConstraints = NO;
-    sidebar.material = NSVisualEffectMaterialSidebar;
-    sidebar.blendingMode = NSVisualEffectBlendingModeBehindWindow;
-    sidebar.state = NSVisualEffectStateActive;
+#pragma mark - Sidebar (mirrors the web track rail)
 
-    NSTextField *mark = [NSTextField labelWithString:@"G"];
-    mark.alignment = NSTextAlignmentCenter;
-    mark.font = [NSFont systemFontOfSize:21 weight:NSFontWeightBold];
-    mark.textColor = [NSColor colorWithCalibratedRed:0.36 green:0.40 blue:0.43 alpha:1.0];
-    mark.wantsLayer = YES;
-    mark.layer.cornerRadius = 8;
-    mark.layer.borderWidth = 1;
-    mark.layer.borderColor = [NSColor separatorColor].CGColor;
-    mark.layer.backgroundColor = [NSColor colorWithCalibratedWhite:1 alpha:0.38].CGColor;
+- (NSView *)buildSidebar {
+    GCFillView *sidebar = [[GCFillView alloc] initWithFrame:NSZeroRect];
+    sidebar.fillColor = GCRailColor();
 
+    NSImageView *mark = [NSImageView imageViewWithImage:NSApp.applicationIconImage ?: [NSImage imageNamed:NSImageNameApplicationIcon]];
+    mark.translatesAutoresizingMaskIntoConstraints = NO;
+    mark.imageScaling = NSImageScaleProportionallyUpOrDown;
     NSTextField *title = [NSTextField labelWithString:@"Genome Canvas"];
-    title.font = [NSFont systemFontOfSize:17 weight:NSFontWeightSemibold];
-    NSTextField *subtitle = [NSTextField labelWithString:@"GENOMICS WORKBENCH"];
-    subtitle.font = [NSFont systemFontOfSize:9 weight:NSFontWeightSemibold];
-    subtitle.textColor = [NSColor tertiaryLabelColor];
-    NSStackView *brandCopy = [NSStackView stackViewWithViews:@[title, subtitle]];
-    brandCopy.orientation = NSUserInterfaceLayoutOrientationVertical;
-    brandCopy.alignment = NSLayoutAttributeLeading;
-    brandCopy.spacing = 2;
-    NSStackView *brand = [NSStackView stackViewWithViews:@[mark, brandCopy]];
-    brand.translatesAutoresizingMaskIntoConstraints = NO;
+    title.font = GCHeadingFont(16);
+    title.textColor = GCTextColor();
+    NSStackView *brand = [NSStackView stackViewWithViews:@[mark, title]];
     brand.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     brand.alignment = NSLayoutAttributeCenterY;
-    brand.spacing = 11;
-    [sidebar addSubview:brand];
+    brand.spacing = 9;
 
-    NSTextField *sourceLabel = [self sectionLabel:@"DATA SOURCE"];
-    self.connectionModeControl = [NSSegmentedControl segmentedControlWithLabels:@[@"This Mac", @"Server"]
-        trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(changeConnectionMode:)];
-    self.connectionModeControl.translatesAutoresizingMaskIntoConstraints = NO;
-    self.connectionModeControl.selectedSegment = self.localMode ? 0 : 1;
-    [sidebar addSubview:sourceLabel];
-    [sidebar addSubview:self.connectionModeControl];
+    NSTextField *sourceLabel = [self sectionLabel:@"Data source"];
+    self.localModeButton = [GCButton buttonWithLabel:@"This Mac" symbol:@"laptopcomputer" style:GCButtonStyleSegment target:self action:@selector(selectLocalMode:)];
+    self.serverModeButton = [GCButton buttonWithLabel:@"Server" symbol:@"server.rack" style:GCButtonStyleSegment target:self action:@selector(selectServerMode:)];
+    self.localModeButton.fixedHeight = 28;
+    self.serverModeButton.fixedHeight = 28;
+    GCFillView *segments = [[GCFillView alloc] initWithFrame:NSZeroRect];
+    segments.fillColor = GCSurface3Color();
+    segments.cornerRadius = 10;
+    [segments addSubview:self.localModeButton];
+    [segments addSubview:self.serverModeButton];
+    [NSLayoutConstraint activateConstraints:@[
+        [segments.heightAnchor constraintEqualToConstant:34],
+        [self.localModeButton.leadingAnchor constraintEqualToAnchor:segments.leadingAnchor constant:3],
+        [self.localModeButton.centerYAnchor constraintEqualToAnchor:segments.centerYAnchor],
+        [self.serverModeButton.leadingAnchor constraintEqualToAnchor:self.localModeButton.trailingAnchor constant:2],
+        [self.serverModeButton.trailingAnchor constraintEqualToAnchor:segments.trailingAnchor constant:-3],
+        [self.serverModeButton.centerYAnchor constraintEqualToAnchor:segments.centerYAnchor],
+        [self.serverModeButton.widthAnchor constraintEqualToAnchor:self.localModeButton.widthAnchor],
+    ]];
 
-    self.workspaceLabel = [self sectionLabel:@"WORKSPACE"];
+    self.workspaceLabel = [self sectionLabel:@"Workspace"];
     self.workspacePopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     self.workspacePopup.translatesAutoresizingMaskIntoConstraints = NO;
-    self.workspacePopup.font = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
+    self.workspacePopup.bordered = NO;
+    self.workspacePopup.font = GCUIFont(13, 550);
     self.workspacePopup.target = self;
     self.workspacePopup.action = @selector(changeWorkspace:);
     [self.workspacePopup addItemWithTitle:@"Choose Workspace…"];
-    [self.workspacePopup setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [self.workspacePopup setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSButton *createWorkspaceButton = [self compactButton:@"plus" tip:@"Create temporary project" action:@selector(createWorkspace:)];
-    self.deleteWorkspaceButton = [self compactButton:@"trash" tip:@"Delete selected temporary project" action:@selector(deleteWorkspace:)];
+    GCFillView *workspaceField = [self fieldContainerWithContent:self.workspacePopup inset:6];
+    [workspaceField setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [workspaceField setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    GCButton *createWorkspaceButton = [self iconButton:@"plus" tip:@"Create temporary project" action:@selector(createWorkspace:)];
+    self.deleteWorkspaceButton = [self iconButton:@"trash" tip:@"Delete selected temporary project" action:@selector(deleteWorkspace:)];
     self.deleteWorkspaceButton.enabled = NO;
-    NSButton *manageWorkspaceButton = [self compactButton:@"gearshape" tip:@"Manage all workspaces" action:@selector(manageWorkspaces:)];
+    GCButton *manageWorkspaceButton = [self iconButton:@"gearshape" tip:@"Manage all workspaces" action:@selector(manageWorkspaces:)];
     self.workspaceControls = [NSStackView stackViewWithViews:@[
-        self.workspacePopup, createWorkspaceButton, self.deleteWorkspaceButton, manageWorkspaceButton
+        workspaceField, createWorkspaceButton, self.deleteWorkspaceButton, manageWorkspaceButton
     ]];
-    self.workspaceControls.translatesAutoresizingMaskIntoConstraints = NO;
     self.workspaceControls.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     self.workspaceControls.alignment = NSLayoutAttributeCenterY;
-    self.workspaceControls.spacing = 5;
-    [sidebar addSubview:self.workspaceLabel];
-    [sidebar addSubview:self.workspaceControls];
+    self.workspaceControls.spacing = 2;
 
-    self.filesButton = [self sidebarButton:@"Open Server Files" symbol:@"externaldrive" action:@selector(openServerFiles:)];
-    NSButton *publicButton = [self sidebarButton:@"Public Data" symbol:@"network" action:@selector(openPublicData:)];
-    NSButton *referenceButton = [self sidebarButton:@"Custom Reference" symbol:@"circle.grid.cross" action:@selector(openCustomReference:)];
-    publicButton.font = [NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium];
-    referenceButton.font = [NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium];
-    publicButton.alignment = NSTextAlignmentCenter;
-    referenceButton.alignment = NSTextAlignmentCenter;
-    NSView *sourceButtons = [[NSView alloc] initWithFrame:NSZeroRect];
-    sourceButtons.translatesAutoresizingMaskIntoConstraints = NO;
-    [sourceButtons addSubview:self.filesButton];
-    [sourceButtons addSubview:publicButton];
-    [sourceButtons addSubview:referenceButton];
-    [sidebar addSubview:sourceButtons];
+    NSView *firstDivider = [self dividerLine];
 
-    [NSLayoutConstraint activateConstraints:@[
-        [self.filesButton.topAnchor constraintEqualToAnchor:sourceButtons.topAnchor],
-        [self.filesButton.leadingAnchor constraintEqualToAnchor:sourceButtons.leadingAnchor],
-        [self.filesButton.trailingAnchor constraintEqualToAnchor:sourceButtons.trailingAnchor],
-        [publicButton.topAnchor constraintEqualToAnchor:self.filesButton.bottomAnchor constant:7],
-        [publicButton.leadingAnchor constraintEqualToAnchor:sourceButtons.leadingAnchor],
-        [referenceButton.topAnchor constraintEqualToAnchor:publicButton.topAnchor],
-        [referenceButton.leadingAnchor constraintEqualToAnchor:publicButton.trailingAnchor constant:7],
-        [referenceButton.trailingAnchor constraintEqualToAnchor:sourceButtons.trailingAnchor],
-        [referenceButton.widthAnchor constraintEqualToAnchor:publicButton.widthAnchor],
-        [referenceButton.bottomAnchor constraintEqualToAnchor:sourceButtons.bottomAnchor]
-    ]];
+    NSTextField *libraryLabel = [self sectionLabel:@"Track library"];
+    self.trackCountLabel = [NSTextField labelWithString:@""];
+    [self updateTrackCount];
+    NSStackView *libraryHeading = [NSStackView stackViewWithViews:@[libraryLabel, self.trackCountLabel]];
+    libraryHeading.orientation = NSUserInterfaceLayoutOrientationVertical;
+    libraryHeading.alignment = NSLayoutAttributeLeading;
+    libraryHeading.spacing = 1;
 
-    NSTextField *tracksLabel = [self sectionLabel:@"TRACKS"];
-    self.trackCountLabel = [NSTextField labelWithString:@"0"];
-    self.trackCountLabel.font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightMedium];
-    self.trackCountLabel.textColor = [NSColor secondaryLabelColor];
-    NSStackView *trackHeading = [NSStackView stackViewWithViews:@[tracksLabel, self.trackCountLabel]];
-    trackHeading.translatesAutoresizingMaskIntoConstraints = NO;
-    trackHeading.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    trackHeading.distribution = NSStackViewDistributionFill;
-    [sidebar addSubview:trackHeading];
+    self.filesButton = [[GCCardButton alloc] initWithFrame:NSZeroRect];
+    self.filesButton.target = self;
+    self.filesButton.action = @selector(openServerFiles:);
+    GCButton *publicButton = [GCButton buttonWithLabel:@"Public data" symbol:@"globe" style:GCButtonStyleSecondary target:self action:@selector(openPublicData:)];
+    GCButton *referenceButton = [GCButton buttonWithLabel:@"Reference" symbol:@"scope" style:GCButtonStyleSecondary target:self action:@selector(openCustomReference:)];
+    publicButton.font = GCUIFont(12.5, 550);
+    referenceButton.font = GCUIFont(12.5, 550);
+    referenceButton.toolTip = @"Load a custom reference genome";
+    publicButton.label = publicButton.label;
+    referenceButton.label = referenceButton.label;
+    NSStackView *sourceActions = [NSStackView stackViewWithViews:@[publicButton, referenceButton]];
+    sourceActions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    sourceActions.distribution = NSStackViewDistributionFillEqually;
+    sourceActions.spacing = 8;
+
+    NSView *secondDivider = [self dividerLine];
+
+    NSTextField *currentLabel = [self sectionLabel:@"Current view"];
+    GCButton *refreshButton = [self iconButton:@"arrow.clockwise" tip:@"Refresh track list" action:@selector(refreshTracks:)];
+    refreshButton.fixedHeight = 26;
+    NSView *headingSpacer = [[NSView alloc] initWithFrame:NSZeroRect];
+    [headingSpacer setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView *currentHeading = [NSStackView stackViewWithViews:@[currentLabel, headingSpacer, refreshButton]];
+    currentHeading.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    currentHeading.alignment = NSLayoutAttributeCenterY;
 
     self.trackTable = [[NSTableView alloc] initWithFrame:NSZeroRect];
     NSTableColumn *trackColumn = [[NSTableColumn alloc] initWithIdentifier:@"track"];
     trackColumn.resizingMask = NSTableColumnAutoresizingMask;
     [self.trackTable addTableColumn:trackColumn];
     self.trackTable.headerView = nil;
-    self.trackTable.rowHeight = 54;
+    self.trackTable.style = NSTableViewStylePlain;
+    self.trackTable.rowHeight = 44;
     self.trackTable.intercellSpacing = NSMakeSize(0, 2);
     self.trackTable.backgroundColor = [NSColor clearColor];
     self.trackTable.selectionHighlightStyle = NSTableViewSelectionHighlightStyleRegular;
     self.trackTable.delegate = self;
     self.trackTable.dataSource = self;
-    self.trackTable.target = self;
-    self.trackTable.action = @selector(trackSelectionChanged:);
     [self.trackTable registerForDraggedTypes:@[GCTrackRowPasteboardType]];
     self.trackTable.draggingDestinationFeedbackStyle = NSTableViewDraggingDestinationFeedbackStyleGap;
     self.trackTable.verticalMotionCanBeginDrag = YES;
@@ -215,75 +599,112 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
     trackScroll.autohidesScrollers = YES;
     trackScroll.drawsBackground = NO;
     trackScroll.borderType = NSNoBorder;
-    [sidebar addSubview:trackScroll];
+    [trackScroll setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
+    [trackScroll setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
 
-    self.removeTrackButton = [self sidebarButton:@"Remove Selected Track" symbol:@"minus.circle" action:@selector(removeSelectedTrack:)];
-    self.removeTrackButton.translatesAutoresizingMaskIntoConstraints = NO;
-    self.removeTrackButton.enabled = NO;
-    [sidebar addSubview:self.removeTrackButton];
+    NSView *tips = [self tipsView];
 
-    self.statusDot = [NSTextField labelWithString:@"●"];
-    self.statusDot.font = [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];
+    self.statusDot = [[GCFillView alloc] initWithFrame:NSZeroRect];
+    self.statusDot.cornerRadius = 3.5;
+    self.statusDot.fillColor = GCWarningColor();
     self.statusLabel = [NSTextField labelWithString:@"Connecting"];
-    self.statusLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
-    self.statusLabel.textColor = [NSColor secondaryLabelColor];
+    self.statusLabel.font = GCUIFont(12, 550);
+    self.statusLabel.textColor = GCText2Color();
     self.statusLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     NSStackView *status = [NSStackView stackViewWithViews:@[self.statusDot, self.statusLabel]];
-    status.translatesAutoresizingMaskIntoConstraints = NO;
     status.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    status.spacing = 6;
-    [sidebar addSubview:status];
+    status.alignment = NSLayoutAttributeCenterY;
+    status.spacing = 7;
 
-    [NSLayoutConstraint activateConstraints:@[
-        [mark.widthAnchor constraintEqualToConstant:42], [mark.heightAnchor constraintEqualToConstant:42],
-        [brand.topAnchor constraintEqualToAnchor:sidebar.safeAreaLayoutGuide.topAnchor constant:18],
-        [brand.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:16],
-        [brand.trailingAnchor constraintLessThanOrEqualToAnchor:sidebar.trailingAnchor constant:-12],
-        [sourceLabel.topAnchor constraintEqualToAnchor:brand.bottomAnchor constant:22],
-        [sourceLabel.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:16],
-        [self.connectionModeControl.topAnchor constraintEqualToAnchor:sourceLabel.bottomAnchor constant:5],
-        [self.connectionModeControl.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:13],
-        [self.connectionModeControl.trailingAnchor constraintEqualToAnchor:sidebar.trailingAnchor constant:-13],
-        [self.connectionModeControl.heightAnchor constraintEqualToConstant:30],
-        [self.workspaceLabel.topAnchor constraintEqualToAnchor:self.connectionModeControl.bottomAnchor constant:14],
-        [self.workspaceLabel.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:16],
-        [self.workspaceControls.topAnchor constraintEqualToAnchor:self.workspaceLabel.bottomAnchor constant:5],
-        [self.workspaceControls.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:13],
-        [self.workspaceControls.trailingAnchor constraintEqualToAnchor:sidebar.trailingAnchor constant:-13],
-        [self.workspacePopup.heightAnchor constraintEqualToConstant:30],
-        [sourceButtons.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:13],
-        [sourceButtons.trailingAnchor constraintEqualToAnchor:sidebar.trailingAnchor constant:-13],
-        [trackHeading.topAnchor constraintEqualToAnchor:sourceButtons.bottomAnchor constant:22],
-        [trackHeading.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:16],
-        [trackHeading.trailingAnchor constraintEqualToAnchor:sidebar.trailingAnchor constant:-16],
-        [trackScroll.topAnchor constraintEqualToAnchor:trackHeading.bottomAnchor constant:7],
-        [trackScroll.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:8],
-        [trackScroll.trailingAnchor constraintEqualToAnchor:sidebar.trailingAnchor constant:-8],
-        [self.removeTrackButton.topAnchor constraintEqualToAnchor:trackScroll.bottomAnchor constant:7],
-        [self.removeTrackButton.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:13],
-        [self.removeTrackButton.trailingAnchor constraintEqualToAnchor:sidebar.trailingAnchor constant:-13],
-        [status.topAnchor constraintEqualToAnchor:self.removeTrackButton.bottomAnchor constant:12],
-        [status.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:16],
-        [status.trailingAnchor constraintLessThanOrEqualToAnchor:sidebar.trailingAnchor constant:-12],
-        [status.bottomAnchor constraintEqualToAnchor:sidebar.safeAreaLayoutGuide.bottomAnchor constant:-12]
+    NSArray<NSView *> *rows = @[
+        brand, sourceLabel, segments, self.workspaceLabel, self.workspaceControls, firstDivider,
+        libraryHeading, self.filesButton, sourceActions, secondDivider, currentHeading, trackScroll, tips, status
+    ];
+    NSStackView *column = [NSStackView stackViewWithViews:rows];
+    column.translatesAutoresizingMaskIntoConstraints = NO;
+    column.orientation = NSUserInterfaceLayoutOrientationVertical;
+    column.alignment = NSLayoutAttributeLeading;
+    column.distribution = NSStackViewDistributionFill;
+    column.spacing = 6;
+    [column setCustomSpacing:18 afterView:brand];
+    [column setCustomSpacing:14 afterView:segments];
+    [column setCustomSpacing:16 afterView:self.workspaceControls];
+    [column setCustomSpacing:14 afterView:firstDivider];
+    [column setCustomSpacing:12 afterView:libraryHeading];
+    [column setCustomSpacing:8 afterView:self.filesButton];
+    [column setCustomSpacing:16 afterView:sourceActions];
+    [column setCustomSpacing:12 afterView:secondDivider];
+    [column setCustomSpacing:12 afterView:trackScroll];
+    [column setCustomSpacing:12 afterView:tips];
+    [sidebar addSubview:column];
+
+    NSMutableArray<NSLayoutConstraint *> *constraints = [NSMutableArray arrayWithArray:@[
+        [mark.widthAnchor constraintEqualToConstant:28], [mark.heightAnchor constraintEqualToConstant:28],
+        [column.topAnchor constraintEqualToAnchor:sidebar.safeAreaLayoutGuide.topAnchor constant:12],
+        [column.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:12],
+        [column.trailingAnchor constraintEqualToAnchor:sidebar.trailingAnchor constant:-12],
+        [column.bottomAnchor constraintEqualToAnchor:sidebar.bottomAnchor constant:-12],
+        [trackScroll.heightAnchor constraintGreaterThanOrEqualToConstant:96],
+        [self.statusDot.widthAnchor constraintEqualToConstant:7], [self.statusDot.heightAnchor constraintEqualToConstant:7],
     ]];
-    self.remoteSourceTopConstraint = [sourceButtons.topAnchor constraintEqualToAnchor:self.workspaceControls.bottomAnchor constant:17];
-    self.localSourceTopConstraint = [sourceButtons.topAnchor constraintEqualToAnchor:self.connectionModeControl.bottomAnchor constant:17];
+    for (NSView *row in @[segments, self.workspaceControls, firstDivider, self.filesButton, sourceActions, secondDivider, currentHeading, trackScroll, tips]) {
+        [constraints addObject:[row.widthAnchor constraintEqualToAnchor:column.widthAnchor]];
+    }
+    [NSLayoutConstraint activateConstraints:constraints];
     return sidebar;
 }
+
+- (NSView *)tipsView {
+    NSArray<NSArray<NSString *> *> *tips = @[
+        @[@"info.circle", @"Indexed formats are fastest.", @" BAM, CRAM, VCF and their index files are paired automatically."],
+        @[@"cursorarrow.click", @"Right-click a track", @" for settings; drag rows here or the six-dot grip to reorder."],
+    ];
+    NSMutableArray<NSView *> *rows = [NSMutableArray array];
+    for (NSArray<NSString *> *tip in tips) {
+        NSImageView *icon = [NSImageView imageViewWithImage:GCSymbol(tip[0], 11, tip[1])];
+        icon.translatesAutoresizingMaskIntoConstraints = NO;
+        icon.contentTintColor = GCText4Color();
+        NSMutableAttributedString *text = [[NSMutableAttributedString alloc] initWithString:tip[1] attributes:@{
+            NSFontAttributeName: GCUIFont(12, 600), NSForegroundColorAttributeName: GCText2Color()
+        }];
+        [text appendAttributedString:[[NSAttributedString alloc] initWithString:tip[2] attributes:@{
+            NSFontAttributeName: GCUIFont(12, 450), NSForegroundColorAttributeName: GCText3Color()
+        }]];
+        NSTextField *label = [NSTextField wrappingLabelWithString:@""];
+        label.attributedStringValue = text;
+        label.translatesAutoresizingMaskIntoConstraints = NO;
+        [label setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+        NSStackView *row = [NSStackView stackViewWithViews:@[icon, label]];
+        row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+        row.alignment = NSLayoutAttributeFirstBaseline;
+        row.spacing = 8;
+        [icon.widthAnchor constraintEqualToConstant:14].active = YES;
+        [label.widthAnchor constraintEqualToConstant:228].active = YES;
+        [rows addObject:row];
+    }
+    NSStackView *stack = [NSStackView stackViewWithViews:rows];
+    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    stack.alignment = NSLayoutAttributeLeading;
+    stack.spacing = 8;
+    return stack;
+}
+
+#pragma mark - Toolbar and canvas
 
 - (NSView *)buildGenomeContent {
     NSView *content = [[NSView alloc] initWithFrame:NSZeroRect];
     content.translatesAutoresizingMaskIntoConstraints = NO;
-    NSVisualEffectView *toolbar = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
-    toolbar.translatesAutoresizingMaskIntoConstraints = NO;
-    toolbar.material = NSVisualEffectMaterialHeaderView;
-    toolbar.blendingMode = NSVisualEffectBlendingModeWithinWindow;
-    toolbar.state = NSVisualEffectStateActive;
+    GCFillView *toolbar = [[GCFillView alloc] initWithFrame:NSZeroRect];
+    toolbar.fillColor = GCSurfaceColor();
     [content addSubview:toolbar];
+    GCFillView *toolbarRule = [[GCFillView alloc] initWithFrame:NSZeroRect];
+    toolbarRule.fillColor = GCBorderColor();
+    [content addSubview:toolbarRule];
 
     self.genomePopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-    self.genomePopup.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
+    self.genomePopup.translatesAutoresizingMaskIntoConstraints = NO;
+    self.genomePopup.bordered = NO;
+    self.genomePopup.font = GCUIFont(13, 550);
     NSArray<NSArray<NSString *> *> *genomes = @[
         @[@"Human · GRCh38 / hg38", @"hg38"], @[@"Human · GRCh37 / hg19", @"hg19"],
         @[@"Mouse · GRCm39 / mm39", @"mm39"], @[@"Mouse · GRCm38 / mm10", @"mm10"],
@@ -297,52 +718,82 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
     self.genomePopup.target = self;
     self.genomePopup.action = @selector(changeGenome:);
     self.genomePopup.toolTip = @"Reference assembly";
+    GCFillView *genomeField = [self fieldContainerWithContent:self.genomePopup inset:6];
 
+    NSImageView *searchIcon = [NSImageView imageViewWithImage:GCSymbol(@"magnifyingglass", 12, @"Search")];
+    searchIcon.translatesAutoresizingMaskIntoConstraints = NO;
+    searchIcon.contentTintColor = GCText3Color();
     self.locusField = [[NSTextField alloc] initWithFrame:NSZeroRect];
-    self.locusField.placeholderString = @"Gene, rsID, or genomic locus";
-    self.locusField.font = [NSFont systemFontOfSize:13 weight:NSFontWeightRegular];
+    self.locusField.translatesAutoresizingMaskIntoConstraints = NO;
+    self.locusField.bordered = NO;
+    self.locusField.drawsBackground = NO;
+    self.locusField.focusRingType = NSFocusRingTypeNone;
+    self.locusField.placeholderAttributedString = [[NSAttributedString alloc] initWithString:@"Gene, rsID, or chr17:7,660,000-7,690,000" attributes:@{
+        NSFontAttributeName: GCMonoFont(12.5, 500), NSForegroundColorAttributeName: GCText4Color()
+    }];
+    self.locusField.font = GCMonoFont(12.5, 500);
+    self.locusField.textColor = GCTextColor();
     self.locusField.target = self;
     self.locusField.action = @selector(searchLocus:);
-    [self.locusField setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [self.locusField setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    self.locusField.cell.scrollable = YES;
+    self.locusField.cell.wraps = NO;
+    NSStackView *locusContent = [NSStackView stackViewWithViews:@[searchIcon, self.locusField]];
+    locusContent.translatesAutoresizingMaskIntoConstraints = NO;
+    locusContent.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    locusContent.alignment = NSLayoutAttributeCenterY;
+    locusContent.spacing = 8;
+    GCFillView *locusField = [self fieldContainerWithContent:locusContent inset:10];
+    [locusField setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [locusField setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
 
-    NSButton *goButton = [NSButton buttonWithTitle:@"Go" target:self action:@selector(searchLocus:)];
-    goButton.bezelStyle = NSBezelStyleRounded;
-    NSButton *zoomOut = [self toolbarButton:@"minus.magnifyingglass" tip:@"Zoom out" action:@selector(zoomOut:)];
-    NSButton *zoomIn = [self toolbarButton:@"plus.magnifyingglass" tip:@"Zoom in" action:@selector(zoomIn:)];
-    self.highlightButton = [self toolbarButton:@"highlighter" tip:@"Highlight an interval" action:@selector(toggleHighlight:)];
-    [self.highlightButton setButtonType:NSButtonTypeToggle];
+    GCButton *goButton = [GCButton buttonWithLabel:@"Go" symbol:nil style:GCButtonStylePrimary target:self action:@selector(searchLocus:)];
+    goButton.fixedHeight = 34;
+    GCButton *zoomOut = [self toolButton:@"minus" tip:@"Zoom out" action:@selector(zoomOut:)];
+    GCButton *zoomIn = [self toolButton:@"plus" tip:@"Zoom in" action:@selector(zoomIn:)];
+    self.highlightButton = [self toolButton:@"highlighter" tip:@"Drag across a track to highlight an interval" action:@selector(toggleHighlight:)];
+    [self.highlightButton setButtonType:NSButtonTypePushOnPushOff];
     self.highlightColorWell = [[NSColorWell alloc] initWithFrame:NSZeroRect];
-    self.highlightColorWell.color = [NSColor colorWithCalibratedRed:0.949 green:0.788 blue:0.298 alpha:1.0];
+    self.highlightColorWell.translatesAutoresizingMaskIntoConstraints = NO;
+    self.highlightColorWell.colorWellStyle = NSColorWellStyleMinimal;
+    self.highlightColorWell.color = GCHex(0xf2c94c, 1);
     self.highlightColorWell.target = self;
     self.highlightColorWell.action = @selector(changeHighlightColor:);
     self.highlightColorWell.toolTip = @"Highlight color";
-    self.clearHighlightsButton = [self toolbarButton:@"eraser" tip:@"Clear highlights" action:@selector(clearHighlights:)];
+    self.clearHighlightsButton = [self toolButton:@"eraser" tip:@"Clear highlights" action:@selector(clearHighlights:)];
     self.clearHighlightsButton.enabled = NO;
-    NSButton *favorites = [self toolbarButton:@"star" tip:@"Favorites" action:@selector(openFavorites:)];
-    NSButton *share = [self toolbarButton:@"square.and.arrow.up" tip:@"Create and copy share link" action:@selector(shareView:)];
-    NSButton *exportButton = [self toolbarButton:@"camera" tip:@"Export PNG" action:@selector(exportPNG:)];
-    self.reloadButton = [self toolbarButton:@"arrow.clockwise" tip:@"Reload from server" action:@selector(reloadOrStop:)];
+    GCButton *exportButton = [self toolButton:@"photo" tip:@"Export PNG" action:@selector(exportPNG:)];
+    NSView *spacer = [[NSView alloc] initWithFrame:NSZeroRect];
+    [spacer setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    GCButton *favorites = [self iconButton:@"star" tip:@"Favorite profiles" action:@selector(openFavorites:)];
+    self.themeButton = [self iconButton:@"moon" tip:@"Switch to dark theme" action:@selector(toggleAppearance:)];
+    self.reloadButton = [self iconButton:@"arrow.clockwise" tip:@"Reload from server" action:@selector(reloadOrStop:)];
+    GCButton *share = [GCButton buttonWithLabel:@"Share" symbol:@"square.and.arrow.up" style:GCButtonStylePrimary target:self action:@selector(shareView:)];
+    share.toolTip = @"Create and copy share link";
+    share.fixedHeight = 34;
+    for (GCButton *button in @[favorites, self.themeButton, self.reloadButton]) button.fixedHeight = 34;
 
     NSStackView *controls = [NSStackView stackViewWithViews:@[
-        self.genomePopup, self.locusField, goButton, zoomOut, zoomIn,
-        self.highlightButton, self.highlightColorWell, self.clearHighlightsButton,
-        favorites, share, exportButton, self.reloadButton
+        genomeField, locusField, goButton, zoomOut, zoomIn, [self verticalRule],
+        self.highlightButton, self.highlightColorWell, self.clearHighlightsButton, exportButton,
+        spacer, favorites, self.themeButton, self.reloadButton, share
     ]];
     controls.translatesAutoresizingMaskIntoConstraints = NO;
     controls.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     controls.alignment = NSLayoutAttributeCenterY;
-    controls.spacing = 7;
+    controls.spacing = 6;
+    [controls setCustomSpacing:2 afterView:zoomOut];
+    [controls setCustomSpacing:10 afterView:goButton];
+    [controls setCustomSpacing:2 afterView:self.reloadButton];
+    [controls setCustomSpacing:8 afterView:self.themeButton];
     [toolbar addSubview:controls];
 
-    self.progressIndicator = [[NSProgressIndicator alloc] initWithFrame:NSZeroRect];
-    self.progressIndicator.translatesAutoresizingMaskIntoConstraints = NO;
-    self.progressIndicator.style = NSProgressIndicatorStyleBar;
-    self.progressIndicator.indeterminate = NO;
-    self.progressIndicator.minValue = 0;
-    self.progressIndicator.maxValue = 1;
-    self.progressIndicator.hidden = YES;
-    [content addSubview:self.progressIndicator];
+    GCFillView *progressTrack = [[GCFillView alloc] initWithFrame:NSZeroRect];
+    [content addSubview:progressTrack];
+    self.progressBar = [[GCFillView alloc] initWithFrame:NSZeroRect];
+    self.progressBar.fillColor = GCAccentColor();
+    self.progressBar.hidden = YES;
+    [progressTrack addSubview:self.progressBar];
+    self.progressWidthConstraint = [self.progressBar.widthAnchor constraintEqualToConstant:0];
 
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
     configuration.websiteDataStore = [WKWebsiteDataStore defaultDataStore];
@@ -353,72 +804,214 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
     self.webView.navigationDelegate = self;
     self.webView.UIDelegate = self;
     self.webView.allowsMagnification = YES;
-    [content addSubview:self.webView];
+    self.webView.underPageBackgroundColor = GCCanvasColor();
+
+    // The canvas sits on the page as an inset sheet, like the web .genome-stage.
+    GCFillView *canvasCard = [[GCFillView alloc] initWithFrame:NSZeroRect];
+    canvasCard.fillColor = GCCanvasColor();
+    canvasCard.strokeColor = GCBorderColor();
+    canvasCard.cornerRadius = 13;
+    canvasCard.clipsContent = YES;
+    [canvasCard addSubview:self.webView];
+    [content addSubview:canvasCard];
 
     [NSLayoutConstraint activateConstraints:@[
         [toolbar.topAnchor constraintEqualToAnchor:content.topAnchor],
         [toolbar.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
         [toolbar.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-        [toolbar.heightAnchor constraintEqualToConstant:54],
+        [toolbar.heightAnchor constraintEqualToConstant:56],
+        [toolbarRule.topAnchor constraintEqualToAnchor:toolbar.bottomAnchor],
+        [toolbarRule.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [toolbarRule.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+        [toolbarRule.heightAnchor constraintEqualToConstant:1],
         [controls.leadingAnchor constraintEqualToAnchor:toolbar.leadingAnchor constant:12],
         [controls.trailingAnchor constraintEqualToAnchor:toolbar.trailingAnchor constant:-12],
         [controls.centerYAnchor constraintEqualToAnchor:toolbar.centerYAnchor],
-        [self.genomePopup.widthAnchor constraintEqualToConstant:177],
-        [self.locusField.widthAnchor constraintGreaterThanOrEqualToConstant:190],
-        [self.highlightColorWell.widthAnchor constraintEqualToConstant:31],
-        [self.highlightColorWell.heightAnchor constraintEqualToConstant:27],
-        [self.progressIndicator.topAnchor constraintEqualToAnchor:toolbar.bottomAnchor],
-        [self.progressIndicator.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
-        [self.progressIndicator.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-        [self.progressIndicator.heightAnchor constraintEqualToConstant:2],
-        [self.webView.topAnchor constraintEqualToAnchor:self.progressIndicator.bottomAnchor],
-        [self.webView.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
-        [self.webView.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-        [self.webView.bottomAnchor constraintEqualToAnchor:content.bottomAnchor]
+        [genomeField.widthAnchor constraintEqualToConstant:196],
+        [locusField.widthAnchor constraintGreaterThanOrEqualToConstant:190],
+        [locusField.widthAnchor constraintLessThanOrEqualToConstant:520],
+        [self.highlightColorWell.widthAnchor constraintEqualToConstant:38],
+        [self.highlightColorWell.heightAnchor constraintEqualToConstant:30],
+        [progressTrack.topAnchor constraintEqualToAnchor:toolbarRule.bottomAnchor],
+        [progressTrack.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [progressTrack.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+        [progressTrack.heightAnchor constraintEqualToConstant:2],
+        [self.progressBar.leadingAnchor constraintEqualToAnchor:progressTrack.leadingAnchor],
+        [self.progressBar.topAnchor constraintEqualToAnchor:progressTrack.topAnchor],
+        [self.progressBar.bottomAnchor constraintEqualToAnchor:progressTrack.bottomAnchor],
+        self.progressWidthConstraint,
+        [canvasCard.topAnchor constraintEqualToAnchor:progressTrack.bottomAnchor constant:8],
+        [canvasCard.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:10],
+        [canvasCard.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-10],
+        [canvasCard.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-10],
+        [self.webView.topAnchor constraintEqualToAnchor:canvasCard.topAnchor constant:1],
+        [self.webView.leadingAnchor constraintEqualToAnchor:canvasCard.leadingAnchor constant:1],
+        [self.webView.trailingAnchor constraintEqualToAnchor:canvasCard.trailingAnchor constant:-1],
+        [self.webView.bottomAnchor constraintEqualToAnchor:canvasCard.bottomAnchor constant:-1],
     ]];
     return content;
 }
 
+#pragma mark - Control factories
+
 - (NSTextField *)sectionLabel:(NSString *)text {
-    NSTextField *label = [NSTextField labelWithString:text];
+    NSTextField *label = [NSTextField labelWithString:@""];
     label.translatesAutoresizingMaskIntoConstraints = NO;
-    label.font = [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold];
-    label.textColor = [NSColor secondaryLabelColor];
+    label.attributedStringValue = [[NSAttributedString alloc] initWithString:text.uppercaseString attributes:@{
+        NSFontAttributeName: GCUIFont(11, 650),
+        NSForegroundColorAttributeName: GCText3Color(),
+        NSKernAttributeName: @0.7,
+    }];
     return label;
 }
 
-- (NSButton *)sidebarButton:(NSString *)title symbol:(NSString *)symbol action:(SEL)action {
-    NSButton *button = [NSButton buttonWithTitle:title target:self action:action];
-    button.translatesAutoresizingMaskIntoConstraints = NO;
-    button.bezelStyle = NSBezelStyleRounded;
-    button.controlSize = NSControlSizeLarge;
-    button.font = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
-    button.image = [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:title];
-    button.imagePosition = NSImageLeading;
-    button.alignment = NSTextAlignmentLeft;
-    [button.heightAnchor constraintEqualToConstant:36].active = YES;
+- (GCFillView *)fieldContainerWithContent:(NSView *)contentView inset:(CGFloat)inset {
+    GCFillView *field = [[GCFillView alloc] initWithFrame:NSZeroRect];
+    field.fillColor = GCSurfaceColor();
+    field.strokeColor = GCBorderStrongColor();
+    field.cornerRadius = 9;
+    contentView.translatesAutoresizingMaskIntoConstraints = NO;
+    [field addSubview:contentView];
+    [NSLayoutConstraint activateConstraints:@[
+        [field.heightAnchor constraintEqualToConstant:34],
+        [contentView.leadingAnchor constraintEqualToAnchor:field.leadingAnchor constant:inset],
+        [contentView.trailingAnchor constraintEqualToAnchor:field.trailingAnchor constant:-inset],
+        [contentView.centerYAnchor constraintEqualToAnchor:field.centerYAnchor],
+    ]];
+    return field;
+}
+
+- (NSView *)dividerLine {
+    GCFillView *line = [[GCFillView alloc] initWithFrame:NSZeroRect];
+    line.fillColor = GCBorderColor();
+    [line.heightAnchor constraintEqualToConstant:1].active = YES;
+    return line;
+}
+
+- (NSView *)verticalRule {
+    GCFillView *line = [[GCFillView alloc] initWithFrame:NSZeroRect];
+    line.fillColor = GCBorderColor();
+    [line.widthAnchor constraintEqualToConstant:1].active = YES;
+    [line.heightAnchor constraintEqualToConstant:22].active = YES;
+    return line;
+}
+
+- (GCButton *)iconButton:(NSString *)symbol tip:(NSString *)tip action:(SEL)action {
+    GCButton *button = [GCButton buttonWithLabel:nil symbol:symbol style:GCButtonStyleGhost target:self action:action];
+    button.toolTip = tip;
+    button.fixedHeight = 30;
     return button;
 }
 
-- (NSButton *)compactButton:(NSString *)symbol tip:(NSString *)tip action:(SEL)action {
-    NSImage *image = [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:tip];
-    NSButton *button = [NSButton buttonWithImage:image target:self action:action];
-    button.translatesAutoresizingMaskIntoConstraints = NO;
-    button.bezelStyle = NSBezelStyleTexturedRounded;
+- (GCButton *)toolButton:(NSString *)symbol tip:(NSString *)tip action:(SEL)action {
+    GCButton *button = [GCButton buttonWithLabel:nil symbol:symbol style:GCButtonStyleTool target:self action:action];
     button.toolTip = tip;
-    [button.widthAnchor constraintEqualToConstant:27].active = YES;
-    [button.heightAnchor constraintEqualToConstant:27].active = YES;
+    button.fixedHeight = 32;
     return button;
 }
 
-- (NSButton *)toolbarButton:(NSString *)symbol tip:(NSString *)tip action:(SEL)action {
-    NSImage *image = [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:tip];
-    NSButton *button = [NSButton buttonWithImage:image target:self action:action];
-    button.bezelStyle = NSBezelStyleTexturedRounded;
-    button.toolTip = tip;
-    [button.widthAnchor constraintEqualToConstant:32].active = YES;
-    [button.heightAnchor constraintEqualToConstant:28].active = YES;
-    return button;
+- (void)updateTrackCount {
+    NSMutableAttributedString *text = [[NSMutableAttributedString alloc] initWithString:[NSString stringWithFormat:@"%lu", (unsigned long)self.tracks.count] attributes:@{
+        NSFontAttributeName: GCHeadingFont(15), NSForegroundColorAttributeName: GCAccentTextColor()
+    }];
+    [text appendAttributedString:[[NSAttributedString alloc] initWithString:@" visible" attributes:@{
+        NSFontAttributeName: GCHeadingFont(15), NSForegroundColorAttributeName: GCTextColor()
+    }]];
+    self.trackCountLabel.attributedStringValue = text;
+}
+
+#pragma mark - Appearance (System / Light / Dark)
+
+- (NSString *)appearancePreference {
+    NSString *value = [[NSUserDefaults standardUserDefaults] stringForKey:GCAppearanceDefaultsKey];
+    return [@[@"light", @"dark"] containsObject:value] ? value : @"system";
+}
+
+- (void)setAppearancePreference:(NSString *)preference {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if ([preference isEqualToString:@"light"] || [preference isEqualToString:@"dark"]) [defaults setObject:preference forKey:GCAppearanceDefaultsKey];
+    else [defaults removeObjectForKey:GCAppearanceDefaultsKey];
+    [self applyAppearancePreference];
+}
+
+- (void)applyAppearancePreference {
+    NSString *preference = [self appearancePreference];
+    if ([preference isEqualToString:@"light"]) NSApp.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
+    else if ([preference isEqualToString:@"dark"]) NSApp.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+    else NSApp.appearance = nil;
+    [self appearanceDidChange];
+}
+
+- (BOOL)systemPrefersDark {
+    return [[[NSUserDefaults standardUserDefaults] stringForKey:@"AppleInterfaceStyle"] isEqualToString:@"Dark"];
+}
+
+- (void)appearanceDidChange {
+    BOOL dark = GCAppearanceIsDark(NSApp.effectiveAppearance);
+    self.themeButton.image = GCSymbol(dark ? @"sun.max" : @"moon", 13, @"Switch theme");
+    self.themeButton.toolTip = dark ? @"Switch to light theme" : @"Switch to dark theme";
+    [self.themeButton refreshColors];
+    NSString *preference = [self appearancePreference];
+    for (NSMenuItem *item in self.appearanceMenuItems) {
+        item.state = [item.representedObject isEqualToString:preference] ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+    // The web canvas mirrors the native appearance (its own toggle is hidden in desktop mode).
+    [self callDesktopMethod:@"setTheme" arguments:@[dark ? @"dark" : @"light"]];
+}
+
+- (void)toggleAppearance:(id)sender {
+    NSString *next = GCAppearanceIsDark(NSApp.effectiveAppearance) ? @"light" : @"dark";
+    // Choosing the theme the system already uses returns to following the system.
+    BOOL matchesSystem = [next isEqualToString:@"dark"] == [self systemPrefersDark];
+    [self setAppearancePreference:matchesSystem ? @"system" : next];
+}
+
+- (void)chooseAppearance:(NSMenuItem *)sender { [self setAppearancePreference:sender.representedObject]; }
+
+#pragma mark - Preview snapshots (CI only)
+
+- (NSString *)snapshotDirectory { return [NSProcessInfo processInfo].environment[@"GENOME_CANVAS_SNAPSHOT_DIR"]; }
+
+- (void)scheduleSnapshotCaptureIfRequested {
+    NSString *directory = [self snapshotDirectory];
+    if (!directory.length || self.snapshotScheduled) return;
+    self.snapshotScheduled = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self captureThemes:@[@"light", @"dark"] directory:directory];
+    });
+}
+
+- (void)captureThemes:(NSArray<NSString *> *)themes directory:(NSString *)directory {
+    if (!themes.count) { [NSApp terminate:nil]; return; }
+    [self setAppearancePreference:themes.firstObject];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        NSString *path = [directory stringByAppendingPathComponent:[NSString stringWithFormat:@"window-%@.png", themes.firstObject]];
+        [self captureWindowToPath:path completion:^{
+            [self captureThemes:[themes subarrayWithRange:NSMakeRange(1, themes.count - 1)] directory:directory];
+        }];
+    });
+}
+
+- (void)captureWindowToPath:(NSString *)path completion:(void (^)(void))completion {
+    NSView *root = self.window.contentView;
+    NSRect bounds = root.bounds;
+    NSBitmapImageRep *chrome = [root bitmapImageRepForCachingDisplayInRect:bounds];
+    [root cacheDisplayInRect:bounds toBitmapImageRep:chrome];
+    NSRect webRect = [self.webView convertRect:self.webView.bounds toView:nil];
+    [self.webView takeSnapshotWithConfiguration:nil completionHandler:^(NSImage *webImage, NSError *error) {
+        NSImage *image = [NSImage imageWithSize:bounds.size flipped:NO drawingHandler:^BOOL(NSRect rect) {
+            [chrome drawInRect:rect];
+            if (webImage) [webImage drawInRect:webRect];
+            return YES;
+        }];
+        NSRect proposed = NSMakeRect(0, 0, bounds.size.width, bounds.size.height);
+        CGImageRef cgImage = [image CGImageForProposedRect:&proposed context:nil hints:nil];
+        if (cgImage) {
+            NSBitmapImageRep *output = [[NSBitmapImageRep alloc] initWithCGImage:cgImage];
+            [[output representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
+        }
+        completion();
+    }];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender { return YES; }
@@ -430,6 +1023,8 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
 
 - (void)dealloc {
     @try { [self.webView removeObserver:self forKeyPath:@"estimatedProgress"]; }
+    @catch (__unused NSException *exception) {}
+    @try { [NSApp removeObserver:self forKeyPath:@"effectiveAppearance"]; }
     @catch (__unused NSException *exception) {}
 }
 
@@ -473,6 +1068,11 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
     [editMenu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];
     [editMenu addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"];
     [editMenu addItemWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"];
+    [editMenu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *removeTrack = [[NSMenuItem alloc] initWithTitle:@"Remove Selected Track" action:@selector(removeSelectedTrack:)
+        keyEquivalent:[NSString stringWithFormat:@"%C", (unichar)NSBackspaceCharacter]];
+    removeTrack.target = self;
+    [editMenu addItem:removeTrack];
     editItem.submenu = editMenu;
     [mainMenu addItem:editItem];
 
@@ -485,19 +1085,38 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
     NSMenuItem *reload = [[NSMenuItem alloc] initWithTitle:@"Reload Genome Canvas" action:@selector(reloadOrStop:) keyEquivalent:@"r"];
     reload.target = self;
     [viewMenu addItem:reload];
+    [viewMenu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *appearanceItem = [[NSMenuItem alloc] initWithTitle:@"Appearance" action:nil keyEquivalent:@""];
+    NSMenu *appearanceMenu = [[NSMenu alloc] initWithTitle:@"Appearance"];
+    NSMutableArray<NSMenuItem *> *appearanceItems = [NSMutableArray array];
+    for (NSArray<NSString *> *entry in @[@[@"Use System Setting", @"system"], @[@"Light", @"light"], @[@"Dark", @"dark"]]) {
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:entry[0] action:@selector(chooseAppearance:) keyEquivalent:@""];
+        item.target = self;
+        item.representedObject = entry[1];
+        [appearanceMenu addItem:item];
+        [appearanceItems addObject:item];
+    }
+    NSMenuItem *toggleTheme = [[NSMenuItem alloc] initWithTitle:@"Toggle Light/Dark" action:@selector(toggleAppearance:) keyEquivalent:@"t"];
+    toggleTheme.target = self;
+    toggleTheme.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [appearanceMenu addItem:[NSMenuItem separatorItem]];
+    [appearanceMenu addItem:toggleTheme];
+    self.appearanceMenuItems = appearanceItems;
+    appearanceItem.submenu = appearanceMenu;
+    [viewMenu addItem:appearanceItem];
     viewItem.submenu = viewMenu;
     [mainMenu addItem:viewItem];
     [NSApp setMainMenu:mainMenu];
 }
 
 - (void)updateConnectionUI {
-    self.connectionModeControl.selectedSegment = self.localMode ? 0 : 1;
+    self.localModeButton.state = self.localMode ? NSControlStateValueOn : NSControlStateValueOff;
+    self.serverModeButton.state = self.localMode ? NSControlStateValueOff : NSControlStateValueOn;
     self.workspaceLabel.hidden = self.localMode;
     self.workspaceControls.hidden = self.localMode;
-    [NSLayoutConstraint deactivateConstraints:@[self.remoteSourceTopConstraint, self.localSourceTopConstraint]];
-    NSLayoutConstraint *sourceTopConstraint = self.localMode ? self.localSourceTopConstraint : self.remoteSourceTopConstraint;
-    sourceTopConstraint.active = YES;
-    self.filesButton.title = self.localMode ? @"Open Local Files" : @"Open Server Files";
+    self.filesButton.titleLabel.stringValue = self.localMode ? @"Open local files" : @"Open server files";
+    self.filesButton.detailLabel.stringValue = self.localMode ? @"Browse files on this Mac without uploading" : @"Browse data directories without uploading";
+    self.filesButton.accessibilityLabel = self.filesButton.titleLabel.stringValue;
     self.openFilesMenuItem.title = self.localMode ? @"Open Local Files…" : @"Open Server Files…";
     self.localBackendMenuItem.state = self.localMode ? NSControlStateValueOn : NSControlStateValueOff;
     self.remoteServerMenuItem.state = self.localMode ? NSControlStateValueOff : NSControlStateValueOn;
@@ -636,9 +1255,11 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
     [self loadServerAddress:address remember:YES];
 }
 
-- (void)changeConnectionMode:(id)sender {
-    if (self.connectionModeControl.selectedSegment == 0) [self activateLocalBackend];
-    else [self editServerAddress:sender];
+- (void)selectLocalMode:(id)sender { [self activateLocalBackend]; }
+
+- (void)selectServerMode:(id)sender {
+    [self updateConnectionUI];
+    [self editServerAddress:sender];
 }
 
 - (void)useLocalBackend:(id)sender { [self activateLocalBackend]; }
@@ -683,9 +1304,9 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
 
 - (void)setStatus:(NSString *)text state:(NSString *)state {
     self.statusLabel.stringValue = text.length ? text : @"Ready";
-    if ([state isEqualToString:@"error"]) self.statusDot.textColor = [NSColor systemRedColor];
-    else if ([state isEqualToString:@"busy"]) self.statusDot.textColor = [NSColor systemOrangeColor];
-    else self.statusDot.textColor = [NSColor systemBlueColor];
+    if ([state isEqualToString:@"error"]) self.statusDot.fillColor = GCDangerColor();
+    else if ([state isEqualToString:@"busy"]) self.statusDot.fillColor = GCWarningColor();
+    else self.statusDot.fillColor = GCSuccessColor();
 }
 
 - (NSString *)JSONFragment:(id)value {
@@ -768,8 +1389,7 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
         self.tracks = trackRecords;
         [self.trackTable reloadData];
     }
-    self.trackCountLabel.stringValue = [NSString stringWithFormat:@"%lu", (unsigned long)self.tracks.count];
-    self.removeTrackButton.enabled = self.trackTable.selectedRow >= 0;
+    [self updateTrackCount];
     self.highlightButton.state = [snapshot[@"highlightMode"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
     self.clearHighlightsButton.enabled = [snapshot[@"highlightCount"] integerValue] > 0;
     NSString *color = snapshot[@"highlightColor"];
@@ -797,57 +1417,62 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { return self.tracks.count; }
 
+- (NSTableRowView *)tableView:(NSTableView *)tableView rowViewForRow:(NSInteger)row {
+    GCTrackRowView *rowView = [tableView makeViewWithIdentifier:@"TrackRow" owner:self];
+    if (!rowView) {
+        rowView = [[GCTrackRowView alloc] initWithFrame:NSZeroRect];
+        rowView.identifier = @"TrackRow";
+    }
+    return rowView;
+}
+
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
     NSTableCellView *cell = [tableView makeViewWithIdentifier:@"TrackCell" owner:self];
     if (!cell) {
         cell = [[NSTableCellView alloc] initWithFrame:NSZeroRect];
         cell.identifier = @"TrackCell";
-        NSView *swatch = [[NSView alloc] initWithFrame:NSZeroRect];
-        swatch.translatesAutoresizingMaskIntoConstraints = NO;
-        swatch.wantsLayer = YES;
-        swatch.layer.cornerRadius = 3;
+        GCFillView *swatch = [[GCFillView alloc] initWithFrame:NSZeroRect];
+        swatch.cornerRadius = 2;
         swatch.identifier = @"TrackSwatch";
         NSTextField *name = [NSTextField labelWithString:@""];
         name.translatesAutoresizingMaskIntoConstraints = NO;
-        name.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
+        name.font = GCUIFont(13, 550);
+        name.textColor = GCTextColor();
         name.lineBreakMode = NSLineBreakByTruncatingTail;
         name.identifier = @"TrackName";
+        [name setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
         NSTextField *meta = [NSTextField labelWithString:@""];
         meta.translatesAutoresizingMaskIntoConstraints = NO;
-        meta.font = [NSFont systemFontOfSize:9 weight:NSFontWeightMedium];
-        meta.textColor = [NSColor secondaryLabelColor];
+        meta.font = GCMonoFont(10.5, 550);
+        meta.textColor = GCText3Color();
         meta.identifier = @"TrackMeta";
-        NSImageView *grip = [[NSImageView alloc] initWithFrame:NSZeroRect];
-        grip.translatesAutoresizingMaskIntoConstraints = NO;
-        grip.image = [NSImage imageWithSystemSymbolName:@"line.3.horizontal" accessibilityDescription:@"Drag to reorder"];
-        grip.contentTintColor = [NSColor tertiaryLabelColor];
-        [cell addSubview:swatch]; [cell addSubview:name]; [cell addSubview:meta]; [cell addSubview:grip];
+        GCButton *remove = [GCButton buttonWithLabel:nil symbol:@"xmark" style:GCButtonStyleGhost target:self action:@selector(removeTrackFromRow:)];
+        remove.fixedHeight = 24;
+        remove.identifier = @"TrackRemove";
+        remove.toolTip = @"Remove track";
+        remove.hidden = YES;
+        [cell addSubview:swatch]; [cell addSubview:name]; [cell addSubview:meta]; [cell addSubview:remove];
         [NSLayoutConstraint activateConstraints:@[
-            [swatch.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:8],
+            [swatch.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:10],
             [swatch.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
-            [swatch.widthAnchor constraintEqualToConstant:6], [swatch.heightAnchor constraintEqualToConstant:34],
+            [swatch.widthAnchor constraintEqualToConstant:4], [swatch.heightAnchor constraintEqualToConstant:28],
             [name.leadingAnchor constraintEqualToAnchor:swatch.trailingAnchor constant:10],
-            [name.trailingAnchor constraintLessThanOrEqualToAnchor:grip.leadingAnchor constant:-6],
-            [name.topAnchor constraintEqualToAnchor:cell.topAnchor constant:9],
+            [name.trailingAnchor constraintLessThanOrEqualToAnchor:remove.leadingAnchor constant:-4],
+            [name.topAnchor constraintEqualToAnchor:cell.topAnchor constant:6],
             [meta.leadingAnchor constraintEqualToAnchor:name.leadingAnchor],
-            [meta.trailingAnchor constraintLessThanOrEqualToAnchor:grip.leadingAnchor constant:-6],
-            [meta.topAnchor constraintEqualToAnchor:name.bottomAnchor constant:3],
-            [grip.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-7],
-            [grip.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
-            [grip.widthAnchor constraintEqualToConstant:17], [grip.heightAnchor constraintEqualToConstant:17]
+            [meta.trailingAnchor constraintLessThanOrEqualToAnchor:remove.leadingAnchor constant:-4],
+            [meta.topAnchor constraintEqualToAnchor:name.bottomAnchor constant:1],
+            [remove.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-6],
+            [remove.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
         ]];
     }
     NSDictionary *track = self.tracks[row];
-    NSView *swatch = nil;
-    NSTextField *nameField = nil;
-    NSTextField *metaField = nil;
-    for (NSView *subview in cell.subviews) {
-        if ([subview.identifier isEqualToString:@"TrackSwatch"]) swatch = subview;
-        if ([subview.identifier isEqualToString:@"TrackName"]) nameField = (NSTextField *)subview;
-        if ([subview.identifier isEqualToString:@"TrackMeta"]) metaField = (NSTextField *)subview;
-    }
-    swatch.layer.backgroundColor = [self colorFromHex:track[@"color"] ?: @"#71808A"].CGColor;
+    GCFillView *swatch = (GCFillView *)GCFindView(cell, @"TrackSwatch");
+    NSTextField *nameField = (NSTextField *)GCFindView(cell, @"TrackName");
+    NSTextField *metaField = (NSTextField *)GCFindView(cell, @"TrackMeta");
+    swatch.fillColor = [self colorFromHex:track[@"color"] ?: @"#71808A"];
     nameField.stringValue = track[@"name"] ?: @"Untitled track";
+    nameField.toolTip = nameField.stringValue;
     metaField.stringValue = [track[@"format"] ?: @"track" uppercaseString];
     return cell;
 }
@@ -881,7 +1506,17 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
     return YES;
 }
 
-- (void)trackSelectionChanged:(id)sender { self.removeTrackButton.enabled = self.trackTable.selectedRow >= 0; }
+- (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
+    if (menuItem.action == @selector(removeSelectedTrack:)) return self.trackTable.selectedRow >= 0;
+    return YES;
+}
+
+- (void)removeTrackFromRow:(id)sender {
+    NSInteger row = [self.trackTable rowForView:sender];
+    if (row >= 0) [self callDesktopMethod:@"removeTrack" arguments:@[@(row)]];
+}
+
+- (void)refreshTracks:(id)sender { [self requestSnapshot]; }
 
 - (NSDictionary *)selectedWorkspaceRecord {
     NSString *workspaceId = self.workspacePopup.selectedItem.representedObject;
@@ -931,7 +1566,10 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
 - (void)searchLocus:(id)sender { if (self.locusField.stringValue.length) [self callDesktopMethod:@"search" arguments:@[self.locusField.stringValue]]; }
 - (void)zoomIn:(id)sender { [self callDesktopMethod:@"zoomIn" arguments:@[]]; }
 - (void)zoomOut:(id)sender { [self callDesktopMethod:@"zoomOut" arguments:@[]]; }
-- (void)toggleHighlight:(id)sender { [self callDesktopMethod:@"setHighlight" arguments:@[@(self.highlightButton.state == NSControlStateValueOn)]]; }
+- (void)toggleHighlight:(id)sender {
+    [self.highlightButton refreshColors];
+    [self callDesktopMethod:@"setHighlight" arguments:@[@(self.highlightButton.state == NSControlStateValueOn)]];
+}
 - (void)changeHighlightColor:(id)sender { [self callDesktopMethod:@"setHighlightColor" arguments:@[[self hexFromColor:self.highlightColorWell.color]]]; }
 - (void)clearHighlights:(id)sender { [self callDesktopMethod:@"clearHighlights" arguments:@[]]; }
 - (void)openServerFiles:(id)sender { [self callDesktopMethod:@"openServerFiles" arguments:@[]]; }
@@ -964,25 +1602,33 @@ static NSPasteboardType const GCTrackRowPasteboardType = @"org.genomecanvas.desk
 
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSKeyValueChangeKey,id> *)change context:(void *)context {
     if ([keyPath isEqualToString:@"estimatedProgress"]) {
-        self.progressIndicator.doubleValue = self.webView.estimatedProgress;
-        self.progressIndicator.hidden = !self.webView.loading;
+        CGFloat width = self.progressBar.superview.bounds.size.width;
+        self.progressWidthConstraint.constant = width * self.webView.estimatedProgress;
+        self.progressBar.hidden = !self.webView.loading;
         NSString *symbol = self.webView.loading ? @"xmark" : @"arrow.clockwise";
-        self.reloadButton.image = [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:@"Reload or stop"];
+        self.reloadButton.image = GCSymbol(symbol, 13, @"Reload or stop");
+        [self.reloadButton refreshColors];
+        return;
+    }
+    if ([keyPath isEqualToString:@"effectiveAppearance"]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self appearanceDidChange]; });
         return;
     }
     [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
 }
 
-- (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation { [self setStatus:@"Loading" state:@"busy"]; self.progressIndicator.hidden = NO; }
+- (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation { [self setStatus:@"Loading" state:@"busy"]; self.progressBar.hidden = NO; }
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
-    self.progressIndicator.hidden = YES;
+    self.progressBar.hidden = YES;
+    [self appearanceDidChange];
+    [self scheduleSnapshotCaptureIfRequested];
     self.window.title = @"Genome Canvas";
     [self setStatus:@"Preparing canvas" state:@"busy"];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [self requestSnapshot]; });
 }
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error { [self showNavigationError:error]; }
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error { [self showNavigationError:error]; }
-- (void)showNavigationError:(NSError *)error { if (error.code != NSURLErrorCancelled) { [self setStatus:@"Server unavailable" state:@"error"]; self.statusLabel.toolTip = error.localizedDescription; self.progressIndicator.hidden = YES; } }
+- (void)showNavigationError:(NSError *)error { if (error.code != NSURLErrorCancelled) { [self setStatus:@"Server unavailable" state:@"error"]; self.statusLabel.toolTip = error.localizedDescription; self.progressBar.hidden = YES; } }
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView { [self setStatus:@"Canvas process stopped" state:@"error"]; }
 
 - (void)webView:(WKWebView *)webView decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {

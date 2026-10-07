@@ -51,12 +51,27 @@ class MacOSDesktopClientTests(unittest.TestCase):
         self.assertIn('environment[@"GENOME_DATA_ROOTS"] = @"/"', source)
         self.assertIn('@"--ready-file"', source)
         self.assertIn('@"Use Local Backend"', source)
-        self.assertIn('@"Open Local Files"', source)
+        self.assertIn('@"Open local files"', source)
         self.assertIn("self.workspaceControls.hidden = self.localMode", source)
         self.assertIn("self.localMode = NO", source)
         self.assertIn("[self stopLocalBackend];\n    self.localMode = NO", source)
         self.assertIn('setObject:self.serverAddress forKey:GCServerDefaultsKey', source)
         self.assertIn("Boolean(state.config?.localMode)", web_app)
+
+    def test_client_follows_nord_themes_with_manual_override(self):
+        source = (MAC_APP / "Sources" / "main.m").read_text(encoding="utf-8")
+        web_app = (ROOT / "app.js").read_text(encoding="utf-8")
+        script = (MAC_APP / "build.sh").read_text(encoding="utf-8")
+        # Nord Snow / Nord tokens shared with styles.css.
+        self.assertIn("GC_COLOR(GCBackgroundColor, 0xe5e9f0, 1, 0x242933, 1)", source)
+        self.assertIn("GC_COLOR(GCAccentColor, 0x4c7a86, 1, 0x88c0d0, 1)", source)
+        self.assertIn('@[@"Use System Setting", @"system"]', source)
+        self.assertIn("NSApp.appearance = nil", source)
+        self.assertIn('callDesktopMethod:@"setTheme"', source)
+        self.assertIn("setTheme(theme)", web_app)
+        self.assertIn("Resources/Fonts/*.ttf", script)
+        for font in ("Manrope-Variable.ttf", "Fraunces-Variable.ttf", "JetBrainsMono-Variable.ttf"):
+            self.assertTrue((MAC_APP / "Resources" / "Fonts" / font).is_file(), font)
 
     def test_release_notes_explain_gatekeeper_quarantine(self):
         notes = (MAC_APP / "RELEASE_NOTES.md").read_text(encoding="utf-8")

@@ -81,6 +81,10 @@ cp "${compiled_binary}" "${app_bundle}/Contents/MacOS/GenomeCanvasDesktop"
 
 cp "${plist_file}" "${app_bundle}/Contents/Info.plist"
 
+# Interface fonts shared with the web app (variable TrueType, SIL OFL).
+mkdir -p "${app_bundle}/Contents/Resources/Fonts"
+cp "${script_dir}"/Resources/Fonts/*.ttf "${script_dir}"/Resources/Fonts/*.LICENSE "${app_bundle}/Contents/Resources/Fonts/"
+
 # Bundle the dependency-free Python backend and web assets so the native app
 # can run entirely on this Mac. The app launches it on a random loopback port;
 # no /nfs mount or separately installed Genome Canvas checkout is required.

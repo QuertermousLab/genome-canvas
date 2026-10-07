@@ -1266,6 +1266,8 @@ async function fetchJSON(url, options) {
 const FILE_LOCATION_HISTORY_PREFIX = "genome-canvas:last-server-location:";
 const RAIL_COLLAPSED_KEY = "genome-canvas:rail-collapsed";
 const THEME_KEY = "genome-canvas:theme";
+// Set by bindEvents; the native macOS client also drives it through the bridge.
+let applyThemeFromHost = null;
 
 function fileLocationHistoryKey() {
   return `${FILE_LOCATION_HISTORY_PREFIX}${state.authenticatedUser || "genome"}`;
@@ -2341,6 +2343,17 @@ window.GenomeCanvasDesktop = Object.freeze({
   share() { void shareCurrentView(); return true; },
   exportPNG() { void exportPNG(); return true; },
   reload() { window.location.reload(); return true; },
+  // The native client owns the theme in desktop mode; this applies it without
+  // saving a browser-side override.
+  setTheme(theme) {
+    if (theme !== "light" && theme !== "dark") return false;
+    if (applyThemeFromHost) applyThemeFromHost(theme);
+    else {
+      document.documentElement.dataset.theme = theme;
+      syncCanvasTheme();
+    }
+    return true;
+  },
   setHighlight(enabled) { setHighlightMode(Boolean(enabled)); return true; },
   setHighlightColor(color) { setDesktopHighlightColor(color); return true; },
   clearHighlights() { clearHighlights(); return true; },
@@ -2499,6 +2512,7 @@ function bindEvents() {
   const savedTheme = () => {
     try { return window.localStorage.getItem(THEME_KEY); } catch { return null; }
   };
+  applyThemeFromHost = applyTheme;
   applyTheme(savedTheme() || (systemDark.matches ? "dark" : "light"));
   systemDark.addEventListener?.("change", (event) => {
     if (!savedTheme()) applyTheme(event.matches ? "dark" : "light");
