@@ -17,18 +17,20 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      - uses: actions/checkout@v6
       - name: Create draft release
         shell: bash
         run: |
           tag="${GITHUB_REF_NAME}"
           version="${tag#v}"
+          # Release notes are versioned with the app; update the file before tagging.
           gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 || \
             gh release create "${tag}" \
               --repo "${GITHUB_REPOSITORY}" \
               --verify-tag \
               --draft \
               --title "Genome Canvas Desktop ${version}" \
-              --notes "Native Genome Canvas Desktop builds for Apple Silicon and Intel Macs. Version 1.5 brings the redesigned Nord light and dark interface (following the macOS appearance, with a dark track canvas), a new app icon, gzip transfer of large text tracks, and the local reference-cache and LD features to the bundled local backend, alongside remote-server mode. Requires macOS 13 or later and Python 3. The applications are ad-hoc signed; Control-click the app and choose Open if Gatekeeper requests confirmation."
+              --notes-file macos/GenomeCanvasDesktop/RELEASE_NOTES.md
 
   build:
     needs: prepare
