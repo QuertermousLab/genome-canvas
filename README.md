@@ -25,7 +25,9 @@ Genome Canvas is a local-network genome browser for laboratories and research te
 
 ### Web browser
 
-![Genome Canvas web interface with signal, Hi-C and highlighted genomic tracks](docs/images/web-browser.png)
+![Genome Canvas web interface in the Nord light theme with signal, association, Hi-C and gene tracks](docs/images/web-browser.png)
+
+![Genome Canvas web interface in the Nord dark theme with the dark track canvas](docs/images/web-browser-dark.png)
 
 ### Native macOS app
 

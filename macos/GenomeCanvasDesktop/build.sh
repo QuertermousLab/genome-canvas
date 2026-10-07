@@ -85,16 +85,18 @@ cp "${plist_file}" "${app_bundle}/Contents/Info.plist"
 # can run entirely on this Mac. The app launches it on a random loopback port;
 # no /nfs mount or separately installed Genome Canvas checkout is required.
 local_backend="${app_bundle}/Contents/Resources/LocalBackend"
-mkdir -p "${local_backend}/public" "${local_backend}/vendor"
+mkdir -p "${local_backend}/public" "${local_backend}/vendor/fonts"
 for file in \
-  server.py workspace_store.py index.html styles.css app.js \
+  server.py workspace_store.py resource_cache.py index.html styles.css app.js \
   track-colors.mjs signal-style.mjs annotation-style.mjs hic-heatmap.mjs \
-  manhattan-style.mjs public-hubs.mjs highlights.mjs; do
+  manhattan-style.mjs public-hubs.mjs highlights.mjs reference-resources.mjs \
+  canvas-theme.mjs; do
   cp "${repo_dir}/${file}" "${local_backend}/${file}"
 done
 cp "${repo_dir}/public/favicon.svg" "${local_backend}/public/favicon.svg"
 cp "${repo_dir}/vendor/igv.min.js" "${local_backend}/vendor/igv.min.js"
 cp "${repo_dir}/vendor/IGV-LICENSE.txt" "${local_backend}/vendor/IGV-LICENSE.txt"
+cp "${repo_dir}"/vendor/fonts/*.woff2 "${repo_dir}"/vendor/fonts/*.LICENSE "${local_backend}/vendor/fonts/"
 
 # Generate a native multi-resolution icon from the bundled raster master.
 # Using a PNG avoids the inconsistent SVG support in different sips releases.

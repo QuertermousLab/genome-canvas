@@ -12,7 +12,7 @@ class MacOSDesktopClientTests(unittest.TestCase):
         with (MAC_APP / "Resources" / "Info.plist").open("rb") as stream:
             info = plistlib.load(stream)
         self.assertEqual(info["CFBundleIdentifier"], "org.genomecanvas.desktop")
-        self.assertEqual(info["CFBundleShortVersionString"], "1.4.0")
+        self.assertEqual(info["CFBundleShortVersionString"], "1.5.0")
         self.assertEqual(info["LSMinimumSystemVersion"], "13.0")
         self.assertTrue(info["NSAppTransportSecurity"]["NSAllowsArbitraryLoadsInWebContent"])
         self.assertNotIn("NSAllowsArbitraryLoads", info["NSAppTransportSecurity"])
@@ -66,7 +66,10 @@ class MacOSDesktopClientTests(unittest.TestCase):
         self.assertIn("codesign --force --deep --sign -", script)
         self.assertIn("Resources/GenomeCanvas-1024.png", script)
         self.assertIn('Contents/Resources/LocalBackend', script)
-        self.assertIn("server.py workspace_store.py index.html styles.css app.js", script)
+        self.assertIn("server.py workspace_store.py resource_cache.py index.html styles.css app.js", script)
+        self.assertIn("reference-resources.mjs", script)
+        self.assertIn("canvas-theme.mjs", script)
+        self.assertIn("vendor/fonts/*.woff2", script)
         self.assertIn('public/favicon.svg', script)
         self.assertTrue((MAC_APP / "Resources" / "GenomeCanvas-1024.png").is_file())
 
