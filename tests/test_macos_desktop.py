@@ -78,6 +78,12 @@ class MacOSDesktopClientTests(unittest.TestCase):
         for font in ("Manrope-Variable.ttf", "Fraunces-Variable.ttf", "JetBrainsMono-Variable.ttf"):
             self.assertTrue((MAC_APP / "Resources" / "Fonts" / font).is_file(), font)
 
+    def test_only_toggle_buttons_draw_the_selected_state(self):
+        source = (MAC_APP / "Sources" / "main.m").read_text(encoding="utf-8")
+        self.assertIn("return self.showsState && self.state == NSControlStateValueOn;", source)
+        self.assertEqual(source.count(".showsState = YES;"), 3)
+        self.assertNotIn("NSTrackingActiveInKeyWindow", source)
+
     def test_release_notes_explain_gatekeeper_quarantine(self):
         notes = (MAC_APP / "RELEASE_NOTES.md").read_text(encoding="utf-8")
         workflow = (ROOT / ".github" / "workflows" / "release-macos.yml").read_text(encoding="utf-8")

@@ -161,6 +161,9 @@ typedef NS_ENUM(NSInteger, GCButtonStyle) {
 // AppKit's own image and title rendering.
 @interface GCButton : NSButton
 @property(nonatomic) GCButtonStyle style;
+// AppKit flips `state` on every click, even for momentary push buttons, so the
+// "on" appearance is drawn only for buttons that are meant to toggle.
+@property(nonatomic) BOOL showsState;
 @property(nonatomic, copy) NSString *label;
 @property(nonatomic) BOOL hovered;
 @property(nonatomic) CGFloat fixedHeight;
@@ -193,9 +196,10 @@ typedef NS_ENUM(NSInteger, GCButtonStyle) {
 - (void)setState:(NSControlStateValue)state { [super setState:state]; [self refreshColors]; }
 - (void)setEnabled:(BOOL)enabled { [super setEnabled:enabled]; [self refreshColors]; }
 - (void)setStyle:(GCButtonStyle)style { _style = style; [self refreshColors]; }
+- (BOOL)isOn { return self.showsState && self.state == NSControlStateValueOn; }
 - (NSColor *)foregroundColor {
     if (!self.enabled) return GCText4Color();
-    BOOL on = self.state == NSControlStateValueOn;
+    BOOL on = [self isOn];
     switch (self.style) {
         case GCButtonStylePrimary: return GCOnAccentColor();
         case GCButtonStyleTool: return on ? GCAccentTextColor() : (self.hovered ? GCTextColor() : GCText2Color());
@@ -225,7 +229,7 @@ typedef NS_ENUM(NSInteger, GCButtonStyle) {
     [super updateTrackingAreas];
     if (self.hoverArea) [self removeTrackingArea:self.hoverArea];
     self.hoverArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect
-        options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect owner:self userInfo:nil];
+        options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInActiveApp | NSTrackingInVisibleRect owner:self userInfo:nil];
     [self addTrackingArea:self.hoverArea];
 }
 - (void)mouseEntered:(NSEvent *)event { self.hovered = YES; }
@@ -233,7 +237,7 @@ typedef NS_ENUM(NSInteger, GCButtonStyle) {
 - (void)viewDidChangeEffectiveAppearance { [super viewDidChangeEffectiveAppearance]; [self refreshColors]; }
 - (void)drawRect:(NSRect)dirtyRect {
     BOOL active = self.enabled && (self.hovered || self.cell.isHighlighted);
-    BOOL on = self.state == NSControlStateValueOn;
+    BOOL on = [self isOn];
     NSColor *fill = nil;
     NSColor *stroke = nil;
     CGFloat radius = self.style == GCButtonStyleSegment ? 7 : 9;
@@ -330,7 +334,7 @@ typedef NS_ENUM(NSInteger, GCButtonStyle) {
     [super updateTrackingAreas];
     if (self.hoverArea) [self removeTrackingArea:self.hoverArea];
     self.hoverArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect
-        options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect owner:self userInfo:nil];
+        options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInActiveApp | NSTrackingInVisibleRect owner:self userInfo:nil];
     [self addTrackingArea:self.hoverArea];
 }
 - (void)mouseEntered:(NSEvent *)event { self.hovered = YES; }
@@ -364,7 +368,7 @@ typedef NS_ENUM(NSInteger, GCButtonStyle) {
     [super updateTrackingAreas];
     if (self.hoverArea) [self removeTrackingArea:self.hoverArea];
     self.hoverArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect
-        options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect owner:self userInfo:nil];
+        options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInActiveApp | NSTrackingInVisibleRect owner:self userInfo:nil];
     [self addTrackingArea:self.hoverArea];
 }
 - (void)mouseEntered:(NSEvent *)event { self.hovered = YES; }
@@ -504,6 +508,8 @@ typedef NS_ENUM(NSInteger, GCButtonStyle) {
     self.serverModeButton = [GCButton buttonWithLabel:@"Server" symbol:@"server.rack" style:GCButtonStyleSegment target:self action:@selector(selectServerMode:)];
     self.localModeButton.fixedHeight = 28;
     self.serverModeButton.fixedHeight = 28;
+    self.localModeButton.showsState = YES;
+    self.serverModeButton.showsState = YES;
     GCFillView *segments = [[GCFillView alloc] initWithFrame:NSZeroRect];
     segments.fillColor = GCSurface3Color();
     segments.cornerRadius = 10;
@@ -751,8 +757,10 @@ typedef NS_ENUM(NSInteger, GCButtonStyle) {
     goButton.fixedHeight = 34;
     GCButton *zoomOut = [self toolButton:@"minus" tip:@"Zoom out" action:@selector(zoomOut:)];
     GCButton *zoomIn = [self toolButton:@"plus" tip:@"Zoom in" action:@selector(zoomIn:)];
+    zoomIn.identifier = @"ZoomInButton";
     self.highlightButton = [self toolButton:@"highlighter" tip:@"Drag across a track to highlight an interval" action:@selector(toggleHighlight:)];
     [self.highlightButton setButtonType:NSButtonTypePushOnPushOff];
+    self.highlightButton.showsState = YES;
     self.highlightColorWell = [[NSColorWell alloc] initWithFrame:NSZeroRect];
     self.highlightColorWell.translatesAutoresizingMaskIntoConstraints = NO;
     self.highlightColorWell.colorWellStyle = NSColorWellStyleMinimal;
@@ -978,6 +986,8 @@ typedef NS_ENUM(NSInteger, GCButtonStyle) {
     if (!directory.length || self.snapshotScheduled) return;
     self.snapshotScheduled = YES;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        // Click a momentary tool button first: it must not look selected afterwards.
+        [(NSButton *)GCFindView(self.window.contentView, @"ZoomInButton") performClick:nil];
         [self captureThemes:@[@"light", @"dark"] directory:directory];
     });
 }
@@ -1258,7 +1268,7 @@ typedef NS_ENUM(NSInteger, GCButtonStyle) {
     [self loadServerAddress:address remember:YES];
 }
 
-- (void)selectLocalMode:(id)sender { [self activateLocalBackend]; }
+- (void)selectLocalMode:(id)sender { [self updateConnectionUI]; [self activateLocalBackend]; }
 
 - (void)selectServerMode:(id)sender {
     [self updateConnectionUI];
