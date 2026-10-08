@@ -1,5 +1,10 @@
 Native Genome Canvas Desktop builds for Apple Silicon and Intel Macs.
 
+## What's new in 1.5.2
+
+- Export PNG is about five times faster on dense views (for example a 2 Mb region with a Hi-C heatmap: 3.5 s → 0.7 s), with identical output
+- Toolbar buttons such as Export PNG, Zoom and Clear no longer stay looking selected after a click
+
 ## What's new in 1.5.1
 
 - Native window redesigned to match the web interface: Nord light and dark themes, the same fonts, and a sidebar with the same file, public-data, reference and track-list controls
