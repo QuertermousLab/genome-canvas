@@ -1,9 +1,9 @@
 import { assayTypeForTrack, automaticTrackColor } from "./track-colors.mjs?v=20260821.4";
 import { installGradientSignalRenderer } from "./signal-style.mjs?v=20261007.2";
 import { installRefSeqAllStyle } from "./annotation-style.mjs?v=20260821.3";
-import { configureHicHeatmap, installHicHeatmapRenderer } from "./hic-heatmap.mjs?v=20261007.2";
+import { configureHicHeatmap, installHicHeatmapRenderer } from "./hic-heatmap.mjs?v=20261008.1";
 import { installManhattanRenderer } from "./manhattan-style.mjs?v=20261007.2";
-import { DARK_CANVAS, LIGHT_CANVAS, installDarkCanvasAdapter, setCanvasTheme } from "./canvas-theme.mjs?v=20261007.2";
+import { DARK_CANVAS, LIGHT_CANVAS, canvasTheme, installDarkCanvasAdapter, setCanvasTheme } from "./canvas-theme.mjs?v=20261007.2";
 import { normalizeReferenceResources } from "./reference-resources.mjs?v=20261005.1";
 import {
   DEFAULT_HIGHLIGHT_COLOR,
@@ -2164,23 +2164,40 @@ async function copyShareLink() {
   }
 }
 
+// Reads the root <svg> size without parsing the whole document, which can be
+// several megabytes for dense views.
+function svgRootSize(svgText) {
+  const root = svgText.slice(0, svgText.indexOf(">", svgText.indexOf("<svg")) + 1);
+  const attribute = (name) => Number.parseFloat((root.match(new RegExp(`\\s${name}="([\\d.]+)`)) || [])[1]);
+  const viewBox = ((root.match(/\sviewBox="([^"]+)"/) || [])[1] || "").split(/[\s,]+/).map(Number);
+  return {
+    width: attribute("width") || viewBox[2] || ui.viewer.clientWidth,
+    height: attribute("height") || viewBox[3] || ui.viewer.scrollHeight,
+  };
+}
+
+let exportInProgress = false;
+
 async function exportPNG() {
-  if (!state.browser) return;
+  if (!state.browser || exportInProgress) return;
+  exportInProgress = true;
+  const exportButton = $("#export-button");
+  if (exportButton) exportButton.disabled = true;
   setStatus("Generating PNG...", "busy");
+  // Let the status and disabled button paint before the synchronous SVG render.
+  await new Promise((resolve) => window.requestAnimationFrame(() => window.setTimeout(resolve, 0)));
   try {
-    // Exported figures always use the light (publication) canvas palette.
+    // Exported figures always use the light (publication) canvas palette. The
+    // export renders into its own SVG context, so the screen needs no repaint.
     let svgText;
+    const screenPalette = canvasTheme();
     setCanvasTheme(LIGHT_CANVAS);
     try {
       svgText = await state.browser.toSVG();
     } finally {
-      syncCanvasTheme();
+      setCanvasTheme(screenPalette);
     }
-    const parsed = new DOMParser().parseFromString(svgText, "image/svg+xml");
-    const svg = parsed.documentElement;
-    const viewBox = (svg.getAttribute("viewBox") || "").split(/\s+/).map(Number);
-    const width = Number.parseFloat(svg.getAttribute("width")) || viewBox[2] || ui.viewer.clientWidth;
-    const height = Number.parseFloat(svg.getAttribute("height")) || viewBox[3] || ui.viewer.scrollHeight;
+    const { width, height } = svgRootSize(svgText);
     const scale = Math.min(2, 8192 / Math.max(width, height));
     const blob = new Blob([svgText], { type: "image/svg+xml;charset=utf-8" });
     const objectURL = URL.createObjectURL(blob);
@@ -2211,6 +2228,9 @@ async function exportPNG() {
   } catch (error) {
     setStatus("PNG export failed", "error");
     toast(`Could not export PNG: ${error.message}`, "error");
+  } finally {
+    exportInProgress = false;
+    if (exportButton) exportButton.disabled = false;
   }
 }
 

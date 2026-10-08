@@ -121,9 +121,33 @@ function drawDiamond(context, centerX, centerY, halfWidth, halfHeight) {
   context.fill();
 }
 
+// Pixel density of the raster embedded in SVG/PNG exports (matches exportPNG's 2x).
+const EXPORT_RASTER_SCALE = 2;
+
 function drawHicHeatmap(track, options) {
   // Contacts fade into the canvas background, so empty cells match the theme.
-  return withoutCanvasAdapter(() => drawHicHeatmapCells(track, options, canvasTheme()));
+  return withoutCanvasAdapter(() => {
+    const palette = canvasTheme();
+    const raster = typeof options.context?.getSerializedSvg === "function" ? rasterContextFor(options) : null;
+    if (!raster) return drawHicHeatmapCells(track, options, palette);
+    // A heatmap is tens of thousands of cells; as SVG paths they dominate export
+    // time and size, so exports embed the painted heatmap as one image instead.
+    drawHicHeatmapCells(track, { ...options, context: raster.context, pixelTop: 0 }, palette);
+    options.context.drawImage(raster.canvas, 0, 0, raster.width, raster.height);
+  });
+}
+
+function rasterContextFor(options) {
+  if (typeof document === "undefined" || typeof document.createElement !== "function") return null;
+  const width = Math.max(1, Math.ceil(options.pixelWidth));
+  const height = Math.max(1, Math.ceil(options.pixelHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = width * EXPORT_RASTER_SCALE;
+  canvas.height = height * EXPORT_RASTER_SCALE;
+  const context = canvas.getContext?.("2d");
+  if (!context) return null;
+  context.scale(EXPORT_RASTER_SCALE, EXPORT_RASTER_SCALE);
+  return { canvas, context, width, height };
 }
 
 function drawHicHeatmapCells(track, options, palette) {
