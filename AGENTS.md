@@ -113,6 +113,35 @@ inside `withoutCanvasAdapter()`. IGV's HTML (track labels, menus, drag/gear
 columns) is themed through `.genome-canvas-dark` CSS in `TRACK_REORDER_CSS` in
 `app.js`. Covered by `tests/test_canvas_theme.mjs`.
 
+## PNG export pipeline
+
+`exportPNG()` in `app.js` works in four steps:
+1. `browser.toSVG()`: IGV redraws every track into an SVG context, one element per shape.
+2. Read the size from the root `<svg>` tag (`svgRootSize`; do not `DOMParser` the whole document).
+3. Rasterize the SVG at 2x.
+4. Encode the PNG.
+
+Steps 1 and 3 run on the main thread and scale with the **number of SVG
+elements**, so a renderer that draws thousands of shapes must not emit them as
+vectors during export:
+- Detect export with `typeof context.getSerializedSvg === "function"`.
+- Paint into a 2x offscreen canvas, then call the 5-argument
+  `context.drawImage(canvas, x, y, width, height)`. That form embeds the canvas
+  at full resolution; other forms downscale it.
+
+`hic-heatmap.mjs` does this (`rasterContextFor`). A 2 Mb Hi-C view went from
+38,873 paths and 10.2 MB of SVG to one image, and click-to-download dropped
+from 3.5 s to 0.7 s with pixel-identical output (`tests/test_hic_heatmap.mjs`
+covers it). Other rules:
+- Export swaps the canvas palette to `LIGHT_CANVAS` only around `toSVG` and
+  restores it without a repaint, since the screen is not redrawn.
+- The button is disabled while an export runs.
+
+To profile export, use the Playwright setup below. In `addInitScript`, wrap
+`window.igv.createBrowser` to capture the IGV browser object, then time
+`toSVG`, the SVG decode, and `toBlob`. For a per-track breakdown, replace the
+other track views' `renderSVGContext` with a no-op and call `toSVG` once per track.
+
 ## macOS client
 
 - AppKit code (`Sources/main.m`) **only compiles on macOS**. Without a Mac, push a
@@ -123,6 +152,12 @@ columns) is themed through `.genome-canvas-dark` CSS in `TRACK_REORDER_CSS` in
 - The palette is defined with `GC_COLOR(...)` macros that mirror the CSS tokens.
   Custom controls (`GCButton`, `GCCardButton`, `GCTrackRowView`, `GCFillView`)
   draw in `drawRect:` so they follow appearance changes and render in snapshots.
+- AppKit flips an `NSButton`'s `state` on every click, even for momentary
+  buttons. `GCButton` therefore draws the selected look only when `showsState`
+  is set: Highlight and the This Mac/Server segments set it; Export, Zoom and
+  Clear do not. Hover tracking uses `NSTrackingActiveInActiveApp` so buttons
+  un-hover while a sheet (e.g. the PNG save panel) is key. The preview snapshot
+  clicks `ZoomInButton` before capturing so a regression shows up in the screenshots.
 - Appearance: `NSUserDefaults` key `GenomeCanvasAppearance` (`light`/`dark`,
   absent = system). The native app pushes the effective theme to the web canvas
   via the `setTheme` bridge method.
@@ -147,12 +182,18 @@ Wait for the selector `#viewer-loading.hidden` with `state: "attached"`.
 
 ## History
 
-- **2026-10:** web UI redesigned (Nord themes, fonts, logo, dark canvas,
+The current macOS release is **1.5.2**. Check
+`gh release list -R QuertermousLab/genome-canvas` for anything newer.
+
+- **2026-10-07:** web UI redesigned (Nord themes, fonts, logo, dark canvas,
   gzip/scandir/preload performance work). The NFS copy, which had diverged from
-  GitHub, was merged into the repo and turned into a git checkout. Releases
-  1.5.0 and 1.5.1 were published.
-- **1.5.0's This Mac mode is broken** (404); 1.5.1 fixes it and adds the native
-  Nord redesign.
+  GitHub, was merged into the repo and turned into a git checkout. Released 1.5.0.
+- **1.5.0's This Mac mode is broken** (404).
+- **1.5.1:** fixes This Mac mode and brings the Nord redesign to the native app.
+- **2026-10-08, 1.5.2:**
+  - PNG export about 5x faster on dense views (Hi-C rasterized in exports; see
+    "PNG export pipeline"). This web change was live on thor right away and needed no restart.
+  - Mac toolbar buttons no longer stay looking selected after a click.
 - Untracked items that were intentionally left in place:
   - `node_modules/`: only needed for `npm run vendor:update`.
   - Apache logs in `.genomecanvas/apache/`: truncate them rather than delete them; Apache keeps them open.

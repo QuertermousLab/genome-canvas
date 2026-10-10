@@ -235,7 +235,9 @@ ETags. JSON responses and whole-file plain-text tracks (for example BED or
 BEDPE without an index) are gzip encoded when the browser accepts it, and the
 compressed copy is cached in memory; byte-range requests are never re-encoded.
 Directory listings use `scandir` so large NFS folders only stat folders and
-track files. The page preloads IGV.js, its ES modules and the bundled fonts in
+track files. PNG export embeds the Hi-C heatmap as a single raster image
+instead of one SVG shape per contact, which makes exporting dense views about
+five times faster with identical output. The page preloads IGV.js, its ES modules and the bundled fonts in
 parallel, and requests the workspace configuration alongside the catalog. Workspace catalog reads are cached for ten seconds, with immediate
 invalidation after application-managed workspace changes. Gene/rsID search,
 BLAT, and loading new public hubs can still require public services.
